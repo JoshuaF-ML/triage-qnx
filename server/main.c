@@ -111,23 +111,26 @@ static void run_request(const triage_request_t *req, triage_reply_t *rep,
     deadline_at   = req->deadline_us ? arrival_us + req->deadline_us : 0;
 
     for (i = 0; i < total_chunks; i++) {
-        uint64_t c0 = engine_now_us();
-        uint64_t elapsed;
+        uint64_t elapsed = engine_run_chunk(task, tier);
+        uint64_t floor_us;
 
-        engine_run_chunk(task, tier);
-
-        now_us  = engine_now_us();
-        elapsed = now_us - c0;
+        now_us = engine_now_us();
 
         /*
-         * Did the wall clock run ahead of the work we did? If a chunk of
-         * nominally 2 ms took 9 ms, we were not slow -- we were off the
-         * CPU because something more urgent arrived. Count it, and
-         * attribute the lost time.
+         * Did the wall clock run ahead of the work we did? If a chunk that
+         * has been seen to finish in 2 ms took 9 ms, we were not slow -- we
+         * were off the CPU because something more urgent arrived. Count it,
+         * and attribute the lost time.
+         *
+         * The baseline is the measured floor, not the nominal chunk cost:
+         * this target's uncontended throughput varies by over 2x, and
+         * comparing against a declared constant both hides real preemptions
+         * and invents false ones. See engine_chunk_floor_us().
          */
-        if (elapsed > chunk_us + chunk_us / 2) {
+        floor_us = engine_chunk_floor_us(task, tier);
+        if (elapsed > floor_us + floor_us / 2) {
             rep->preempted++;
-            rep->stolen_us += elapsed - chunk_us;
+            rep->stolen_us += elapsed - floor_us;
         }
 
         rep->chunks++;
@@ -139,6 +142,11 @@ static void run_request(const triage_request_t *req, triage_reply_t *rep,
          */
         if (deadline_at && !(req->flags & TRIAGE_F_NO_DEGRADE)
             && i + 1 < total_chunks) {
+            /* Nominal cost here, not the measured floor, and deliberately:
+             * the floor is the FASTEST a chunk has run, so budgeting the
+             * remaining work with it would be optimistic exactly when the
+             * machine is busy. A deadline estimate should err towards
+             * stopping early. */
             uint64_t remaining = (uint64_t)(total_chunks - i - 1) * chunk_us;
 
             if (now_us + remaining > deadline_at) {
@@ -378,6 +386,13 @@ int main(int argc, char **argv)
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
+    /* The calibration figure is in the banner because every timing number
+     * this server reports is scaled by it. If it looks absurd, the
+     * benchmark is meaningless and this is where you find out. */
+    fprintf(stderr, "triage: calibrated at %llu work units/us "
+                    "(2000us burn measured %lluus)\n",
+            (unsigned long long)engine_work_per_us(),
+            (unsigned long long)engine_calib_check_us());
     fprintf(stderr, "triage: serving %s (pool max %d threads)\n",
             path, max_threads);
     if (verbose)

@@ -3,9 +3,9 @@
  *
  * The engine is deliberately behind a narrow interface so the inference
  * backend can be swapped without touching the resource manager or the
- * scheduler. Today it is a calibrated CPU load that burns a known number
- * of microseconds per chunk; week 1's open question is which real runtime
- * replaces it (llama.cpp for CHAT, a small detector for DETECT).
+ * scheduler. Today it is a calibrated CPU load that performs a known
+ * amount of arithmetic per chunk; week 1's open question is which real
+ * runtime replaces it (llama.cpp for CHAT, a small detector for DETECT).
  *
  * The one property the rest of Triage depends on is CHUNKING: a tier's
  * work is executed as a sequence of bounded chunks, so between any two
@@ -25,18 +25,42 @@ void     engine_init(void);
 /* Monotonic microseconds from the hardware cycle counter (ClockCycles). */
 uint64_t engine_now_us(void);
 
-/* Burn CPU for approximately us microseconds at the caller's priority.
- * This is CPU-bound on purpose: a sleeping thread cannot demonstrate
- * preemption, and real inference is CPU-bound too. */
+/* Do the amount of work that takes `us` microseconds on an idle CPU, at the
+ * caller's priority. CPU-bound on purpose: a sleeping thread cannot
+ * demonstrate preemption, and real inference is CPU-bound too.
+ *
+ * It does NOT return in `us` -- it returns when the work is finished, which
+ * is later if something more urgent ran. A fixed amount of work rather than
+ * a fixed amount of wall time is what makes stolen CPU measurable at all;
+ * engine.c explains why the reverse silently defeats the measurement. */
 void     engine_burn_us(uint64_t us);
+
+/* Work units per microsecond of uncontended CPU, measured by engine_init.
+ * Exposed for the startup banner, so a nonsense calibration is visible. */
+uint64_t engine_work_per_us(void);
+
+/* What the last calibration round measured for a burn that should have
+ * taken 2000us. Far from 2000 means every timing here is scaled wrong. */
+uint64_t engine_calib_check_us(void);
 
 /* Shape of a tier's work. */
 unsigned engine_chunks(triage_task_t task, triage_tier_t tier);
 uint64_t engine_chunk_us(triage_task_t task, triage_tier_t tier);
 uint64_t engine_nominal_us(triage_task_t task, triage_tier_t tier);
 
-/* Run one chunk of a tier's work. */
-void     engine_run_chunk(triage_task_t task, triage_tier_t tier);
+/* Run one chunk of a tier's work. Returns the wall-clock microseconds it
+ * took, which is the figure the preemption accounting compares against the
+ * floor below -- not the nominal chunk cost. */
+uint64_t engine_run_chunk(triage_task_t task, triage_tier_t tier);
+
+/* The fastest this tier's chunk has ever actually completed, in us: the
+ * measured cost of the chunk when nothing was competing for the CPU.
+ * Seeded from the nominal cost, ratchets down as evidence arrives.
+ *
+ * Preemption detection needs a trustworthy "how long should this have
+ * taken". On real hardware under a hypervisor the nominal number is not
+ * one -- engine.c records how far off it was measured to be. */
+uint64_t engine_chunk_floor_us(triage_task_t task, triage_tier_t tier);
 
 /* Fill in the answer text and a confidence in 0..1000 for a completed
  * request. Higher tiers are more confident -- that is the whole point of

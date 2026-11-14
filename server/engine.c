@@ -1,3 +1,4 @@
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/neutrino.h>
@@ -8,6 +9,164 @@
 static uint64_t cycles_per_us = 1;
 
 /*
+ * Work units per microsecond of uncontended CPU, measured at startup.
+ *
+ * WHY THIS EXISTS, AND WHY THE OBVIOUS VERSION WAS WRONG
+ * ------------------------------------------------------
+ * The first version of this engine burned a chunk by spinning until the
+ * wall clock had advanced by chunk_us. That is a plausible-looking stand-in
+ * for inference and it is useless, for a reason worth recording.
+ *
+ * If a chunk spins until the wall clock says "chunk_us has passed", then
+ * being descheduled mid-chunk does not make the chunk take longer -- it
+ * makes the chunk do LESS WORK in the same wall time. Elapsed comes out at
+ * chunk_us whether we had the CPU to ourselves or lost 90% of it to a more
+ * urgent request. So:
+ *
+ *   - preempted and stolen_us could never be non-zero. They were not
+ *     measuring zero preemption; they were incapable of measuring any.
+ *   - low-priority work never actually slowed down under contention, so a
+ *     benchmark against an FCFS baseline would show no cost to being
+ *     preempted, and would prove nothing.
+ *
+ * A real model does a fixed amount of arithmetic per layer; losing the CPU
+ * makes it finish later, not do less. So a chunk here is a fixed number of
+ * work units, calibrated once. Wall-clock elapsed per chunk then exceeds
+ * the nominal cost exactly when we were off the CPU -- which is what the
+ * preemption accounting in run_request() reads.
+ */
+static uint64_t work_per_us = 0;
+
+/* What a nominal 2000us burn actually measured on the final estimate. The
+ * banner prints it: if it is not close to 2000, every timing this server
+ * reports is scaled wrong and the operator should know before trusting a
+ * benchmark. */
+static uint64_t calib_check_us = 0;
+
+/* The unit of pretend-inference: dependency-chained integer arithmetic, so
+ * each step waits on the previous one and the cost per unit is stable. No
+ * memory traffic, so timing does not depend on cache state, and nothing the
+ * compiler can hoist out or vectorise away. */
+static void burn_work(uint64_t units)
+{
+    static volatile uint64_t sink;
+    uint64_t acc = sink | 1u;
+    uint64_t i;
+
+    for (i = 0; i < units; i++)
+        acc = acc * 6364136223846793005ull + 1442695040888963407ull;
+
+    sink = acc;
+}
+
+/* Time one burn of `units` work, in microseconds, taking the fastest of
+ * `trials` runs.
+ *
+ * Fastest, not mean, and that is the whole point. A trial that got
+ * interrupted reports a lower throughput; folding it in would inflate every
+ * later chunk's nominal cost and make preemption look like the normal case.
+ * The quickest trial is the one that most nearly had the CPU to itself, so
+ * it is the best available estimate of uncontended throughput. */
+static uint64_t best_burn_us(uint64_t units, int trials)
+{
+    uint64_t best = UINT64_MAX;
+    int i;
+
+    for (i = 0; i < trials; i++) {
+        uint64_t t0 = (uint64_t)ClockCycles();
+        uint64_t dt;
+
+        burn_work(units);
+        dt = (uint64_t)ClockCycles() - t0;
+
+        if (dt > 0 && dt < best)
+            best = dt;
+    }
+
+    if (best == UINT64_MAX)
+        return 0;
+    return best / cycles_per_us;
+}
+
+/*
+ * Calibrate work_per_us by closed-loop refinement.
+ *
+ * A single open-loop probe is not good enough, and the first version of
+ * this was wrong in a way worth recording. It timed one fixed batch of work
+ * in the first milliseconds after startup and divided. The figure came out
+ * roughly 2x too low, so every chunk afterwards did about half the work it
+ * claimed: a tier with a 12 ms nominal cost finished in 5 ms. Harmless
+ * here, because it made the deadline logic pessimistic about how much it
+ * could fit -- but in the other direction the same error would silently
+ * blow every deadline, and either way the benchmark numbers would be
+ * fiction.
+ *
+ * The cause is that throughput at startup is not throughput later: the host
+ * has not ramped the vCPU, caches are cold, and under a hypervisor the
+ * first run of a loop is the slowest it will ever be. So instead of
+ * trusting one measurement, aim at a known target and correct:
+ *
+ *   guess -> burn what should take TARGET_US -> measure -> rescale
+ *
+ * Each round starts from a warmer machine than the last, so the estimate
+ * converges upward to the real rate rather than being anchored to the cold
+ * one. Three rounds is comfortably enough; the loop stops early once the
+ * error is under a few percent.
+ */
+static void calibrate(void)
+{
+    const uint64_t target_us = 2000u;   /* same order as a real chunk */
+    int round;
+
+    /* Seed: one coarse open-loop probe, just to get the magnitude right. */
+    burn_work(200000u);                 /* warm i-cache, branch predictor */
+    {
+        uint64_t us = best_burn_us(200000u, 5);
+        work_per_us = us ? 200000u / us : 1000u;
+        if (work_per_us == 0)
+            work_per_us = 1;
+    }
+
+    for (round = 0; round < 3; round++) {
+        uint64_t units = target_us * work_per_us;
+        uint64_t got   = best_burn_us(units, 5);
+        uint64_t next;
+
+        if (got == 0)
+            break;
+        calib_check_us = got;
+
+        /* If that took `got` us instead of `target_us`, the true rate is
+         * higher than we thought by exactly that ratio. */
+        next = (work_per_us * target_us) / got;
+        if (next == 0)
+            next = 1;
+
+        /* Within 3% -- stop; further rounds only chase noise. */
+        if (got * 100 >= target_us * 97 && got * 100 <= target_us * 103) {
+            work_per_us = next;
+            return;
+        }
+        work_per_us = next;
+    }
+
+    if (work_per_us == 0) {
+        fprintf(stderr, "triage: warning: calibration failed; timings suspect\n");
+        work_per_us = 1000u;
+    }
+}
+
+uint64_t engine_work_per_us(void)
+{
+    return work_per_us;
+}
+
+uint64_t engine_calib_check_us(void)
+{
+    return calib_check_us;
+}
+
+/*
  * Tier cost model.
  *
  * chunks x chunk_us is the nominal cost of a tier. The numbers are chosen
@@ -16,10 +175,10 @@ static uint64_t cycles_per_us = 1;
  * which is exactly the situation that makes first-come-first-served
  * inference dangerous.
  *
- * chunk_us is also the preemption granularity: a request can only be
- * interrupted by our own accounting at a chunk boundary, so keeping
- * chunk_us small (~1-2 ms) is what makes "it preempts mid-inference" an
- * honest claim rather than a slogan. See docs/architecture.md.
+ * chunk_us is NOT the preemption granularity -- preemption is the kernel's
+ * and is immediate at any chunk size. It is the granularity of our own
+ * accounting: how often we re-check the deadline, and the resolution at
+ * which stolen CPU time becomes visible. See docs/architecture.md.
  */
 typedef struct {
     unsigned chunks;
@@ -64,6 +223,8 @@ void engine_init(void)
     cycles_per_us = cps / 1000000u;
     if (cycles_per_us == 0)
         cycles_per_us = 1;
+
+    calibrate();
 }
 
 uint64_t engine_now_us(void)
@@ -71,17 +232,17 @@ uint64_t engine_now_us(void)
     return (uint64_t)ClockCycles() / cycles_per_us;
 }
 
+/*
+ * Do the amount of work that takes `us` microseconds on an idle CPU.
+ *
+ * Note what this does NOT promise: that it returns in `us`. It returns when
+ * the work is done, which is later than that if something more urgent ran.
+ * That gap is the measurement the whole project rests on -- see work_per_us
+ * above.
+ */
 void engine_burn_us(uint64_t us)
 {
-    uint64_t end = (uint64_t)ClockCycles() + us * cycles_per_us;
-    volatile uint64_t sink = 0;
-
-    /* A tight loop that the compiler cannot elide. Checking the cycle
-     * counter every iteration is itself work, which is fine: we are
-     * standing in for inference, not measuring the loop. */
-    while ((uint64_t)ClockCycles() < end)
-        sink += 1;
-    (void)sink;
+    burn_work(us * work_per_us);
 }
 
 static int valid(triage_task_t task, triage_tier_t tier)
@@ -106,11 +267,66 @@ uint64_t engine_nominal_us(triage_task_t task, triage_tier_t tier)
     return (uint64_t)shapes[task][tier].chunks * shapes[task][tier].chunk_us;
 }
 
-void engine_run_chunk(triage_task_t task, triage_tier_t tier)
+/*
+ * The fastest a chunk of this tier has ever actually completed, in us.
+ *
+ * WHY A MEASURED FLOOR AND NOT THE NOMINAL NUMBER
+ * -----------------------------------------------
+ * Preemption is detected by noticing that a chunk took longer than it
+ * should have. That needs a trustworthy "should have", and the nominal
+ * chunk_us is not one. Measured on the QEMU target, the same chunk's
+ * uncontended cost varied by more than 2x across a single run: the host is
+ * a laptop running Windows, WSL2 and a hypervisor, and it does not hand out
+ * CPU at a constant rate. Against a fixed nominal baseline that variance
+ * both hides real preemptions and manufactures fake ones, which would make
+ * every preemption number in the benchmark worthless.
+ *
+ * So the baseline is observed rather than declared: the minimum wall time
+ * this chunk has ever taken is the best evidence available of what it costs
+ * when nobody is competing for the CPU. It can only ratchet downward, and
+ * it converges within the first few requests.
+ *
+ * Seeded with the nominal cost so the first request is not wild, and
+ * floored at 1us so the comparison in run_request() cannot divide the
+ * machine's noise into infinity.
+ *
+ * Concurrency: pool threads update this without a lock. The only possible
+ * race is two threads both lowering the same floor at once and one update
+ * being lost, which costs us a slightly high floor for one more chunk. A
+ * mutex on the measurement path would be a worse trade.
+ */
+static uint64_t chunk_floor_us[TRIAGE_TASK__COUNT][TRIAGE_TIER__COUNT];
+
+uint64_t engine_chunk_floor_us(triage_task_t task, triage_tier_t tier)
 {
+    uint64_t f;
+
     if (!valid(task, tier))
-        return;
+        return 1;
+    f = chunk_floor_us[task][tier];
+    if (f == 0)
+        f = shapes[task][tier].chunk_us;   /* not measured yet */
+    return f ? f : 1;
+}
+
+uint64_t engine_run_chunk(triage_task_t task, triage_tier_t tier)
+{
+    uint64_t t0, elapsed;
+
+    if (!valid(task, tier))
+        return 0;
+
+    t0 = engine_now_us();
     engine_burn_us(shapes[task][tier].chunk_us);
+    elapsed = engine_now_us() - t0;
+
+    if (elapsed > 0) {
+        uint64_t cur = chunk_floor_us[task][tier];
+        if (cur == 0 || elapsed < cur)
+            chunk_floor_us[task][tier] = elapsed;
+    }
+
+    return elapsed;
 }
 
 static const uint32_t tier_confidence[TRIAGE_TIER__COUNT] = {

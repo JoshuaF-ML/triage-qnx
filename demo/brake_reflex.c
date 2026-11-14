@@ -48,6 +48,14 @@ int main(int argc, char **argv)
     long     count = 200, i;
     unsigned met = 0, missed = 0, degraded = 0, errors = 0;
     uint64_t worst_us = 0, sum_us = 0;
+    /* Priority inheritance is the central claim of this project, so it gets
+     * checked rather than printed for a human to eyeball. Every reply
+     * carries the client's priority and the priority the server thread
+     * actually ran at; if they ever differ, the mechanism is not doing what
+     * the README says, and this program exits non-zero. */
+    unsigned prio_checked = 0, prio_mismatch = 0;
+    unsigned preempted_reqs = 0;
+    uint64_t stolen_total_us = 0;
 
     while ((c = getopt(argc, argv, "P:d:p:n:qh")) != -1) {
         switch (c) {
@@ -92,6 +100,17 @@ int main(int argc, char **argv)
             continue;
         }
 
+        prio_checked++;
+        if (rep.client_prio != rep.server_prio) {
+            prio_mismatch++;
+            printf("  [%4ld] PRIORITY NOT INHERITED: client=%d server=%d\n",
+                   i, rep.client_prio, rep.server_prio);
+        }
+        if (rep.preempted) {
+            preempted_reqs++;
+            stolen_total_us += rep.stolen_us;
+        }
+
         if (rep.deadline_met)
             met++;
         else
@@ -122,13 +141,21 @@ int main(int argc, char **argv)
            "  degraded  %u\n"
            "  errors    %u\n"
            "  mean      %lluus\n"
-           "  worst     %lluus\n",
+           "  worst     %lluus\n"
+           "  preempted %u req, %lluus stolen\n"
+           "  prio      %u checked, %u not inherited\n",
            met + missed,
            met, (met + missed) ? 100.0 * met / (met + missed) : 0.0,
            missed, degraded, errors,
            (unsigned long long)((met + missed) ? sum_us / (met + missed) : 0),
-           (unsigned long long)worst_us);
+           (unsigned long long)worst_us,
+           preempted_reqs, (unsigned long long)stolen_total_us,
+           prio_checked, prio_mismatch);
+
+    if (prio_mismatch)
+        printf("  FAIL priority was not inherited on %u of %u requests\n",
+               prio_mismatch, prio_checked);
 
     triage_close(fd);
-    return missed ? 1 : 0;
+    return (missed || prio_mismatch) ? 1 : 0;
 }

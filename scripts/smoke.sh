@@ -10,9 +10,10 @@
 #   3. Does the server run our work at OUR priority? (the whole thesis)
 #   4. Do high-priority deadlines survive a low-priority flood?
 #
-# Expected: in step 3 the two priority numbers printed per request are
-# equal. In step 4 brake_reflex should report ~100% met while chat_load
-# is hammering the same device.
+# All four are assertions, not things for a human to read and judge:
+# brake_reflex checks the priority pair in every reply itself and exits
+# non-zero if any pair differs, so step 3 fails loudly rather than printing
+# numbers nobody checks.
 
 set -u
 
@@ -51,9 +52,16 @@ fi
 
 say "3. priority inheritance"
 echo "  the two numbers in prio=A/B are the client priority and the"
-echo "  priority our server thread ran at. They should be identical."
-"$BIN/brake_reflex" -n 3 -P 40 -p 100000
-"$BIN/brake_reflex" -n 3 -P 12 -p 100000
+echo "  priority our server thread ran at. They must be identical at"
+echo "  whatever priority the client happens to be, so we ask twice from"
+echo "  two different priorities. brake_reflex checks every reply itself"
+echo "  and exits non-zero if any pair differs."
+if "$BIN/brake_reflex" -n 3 -P 40 -p 100000 &&
+   "$BIN/brake_reflex" -n 3 -P 12 -p 100000; then
+    ok "work ran at the client's priority, from both prio 40 and prio 12"
+else
+    bad "priority was not inherited -- the central claim does not hold"
+fi
 
 say "4. urgent work under a low-priority flood"
 "$BIN/triage_stat" -r >/dev/null 2>&1

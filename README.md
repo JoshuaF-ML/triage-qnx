@@ -60,10 +60,12 @@ Hackathon, submission 14 Dec 2026).
 | Deadline-driven tier selection with an adaptive cost model | built |
 | Text stats / counters | built |
 | Real inference backend (llama.cpp + small detector) | **stand-in load for now** |
+| Boots on QNX 8.0 under QEMU, smoke test green | verified 14 Nov |
+| Priority inheritance verified on target | 100/100 requests, asserted in code |
 | First-come-first-served baseline server for comparison | planned, week 2 |
 | Car sim + web dashboard | planned, week 3 |
 | CPU budget protection | redesigned — see below |
-| Benchmark numbers on hardware | planned, week 4 |
+| Benchmark numbers on hardware | planned, week 4 — **must be bare metal**, see below |
 
 The compute engine currently burns a calibrated number of microseconds per
 chunk instead of running a real model. This is honest scaffolding, not a
@@ -130,10 +132,33 @@ cd /data
 ./smoke.sh
 ```
 
-`smoke.sh` is the proof-of-life script: it checks that `/dev/triage` was
+`smoke.sh` is the proof-of-life script, and all four of its steps are
+assertions rather than output for a human to judge: that `/dev/triage` was
 created, that requests are answered, that the server ran the work at the
 *client's* priority, and that high-priority deadlines survive a
 low-priority flood.
+
+### What it currently reports
+
+First on-target run, QNX 8.0 x86_64 under QEMU, one CPU
+([full output](docs/smoke-x86_64.txt)):
+
+| | |
+|---|---|
+| Priority inherited | **100 / 100 requests**, at priority 40 and 12 |
+| Detection deadlines met under flood | 92% (8 misses of 100) |
+| Preemptions measured | 919, 814 ms of stolen CPU |
+
+The 92% is a real number on a noisy host, and it is reported instead of the
+100% an earlier version of the engine produced, because that 100% was an
+artifact — the engine burned wall-clock time rather than doing work, so a
+preempted request quietly did less and still finished "on time".
+
+Two things follow, both written up in
+[`docs/architecture.md`](docs/architecture.md): the final benchmark has to
+run on bare metal, because this host steals CPU from the guest in amounts
+comparable to the deadline; and tier selection needs to model interference
+as well as cost, which is what causes the 8 misses.
 
 To drive it by hand:
 

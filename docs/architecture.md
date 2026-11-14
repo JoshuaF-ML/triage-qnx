@@ -205,9 +205,93 @@ cores to show it does not get worse.
 2. ~~Is Adaptive Partitioning in the non-commercial image?~~ **Answered:
    no — it is discontinued in QNX 8.0 entirely.** See above. The open
    question is now which replacement to build.
-3. **QEMU or Raspberry Pi for final numbers.** Affects how strongly the
-   benchmark can be stated.
+3. ~~QEMU or Raspberry Pi for final numbers?~~ **Answered: bare metal is
+   required.** The host steals CPU from the guest in quantities comparable
+   to the deadline being measured, and the guest cannot tell that apart
+   from a real preemption. See the measurements section above.
 4. **Unblock handling.** If a client is killed or times out while its
    request is computing, the pool thread keeps burning CPU for an answer
    nobody will read. Needs an `io_unblock` handler and a cancellation
    check at chunk boundaries. Week 2.
+
+## First measurements on the QEMU target (14 Nov 2026)
+
+The first on-target run did three useful things: it confirmed the central
+claim, it falsified two of our own numbers, and it settled an open question.
+Raw output is in [`smoke-x86_64.txt`](smoke-x86_64.txt).
+
+### Confirmed: priority inheritance
+
+100 of 100 requests came back with `client_prio == server_prio`, at both
+priority 40 and priority 12, with four priority-10 chat clients hammering
+the same device. `brake_reflex` now checks this pair on every reply and
+exits non-zero if any pair differs, so it is an assertion rather than a
+number printed for a human to skim.
+
+### Falsified: the preemption counters were incapable of counting
+
+The engine burned a chunk by spinning until the wall clock had advanced by
+`chunk_us`. Under that scheme, losing the CPU mid-chunk does not make the
+chunk take longer — it makes the chunk do *less work in the same wall time*.
+Elapsed came out at `chunk_us` whether or not we had the CPU, so
+`preempted` and `stolen_us` were structurally pinned at zero. The first run
+duly reported 0 preemptions across 141 requests with four low-priority
+threads and a high-priority client interleaved on a single core, which is
+impossible.
+
+A chunk is now a fixed amount of *work* — calibrated integer arithmetic,
+`engine_burn_us()` — because a real model does fixed arithmetic per layer:
+losing the CPU makes it finish later, not do less. The same run then
+reported 919 preemptions and 814 ms of stolen CPU.
+
+This also means the first run's **100% deadline adherence was partly an
+artifact**: a preempted request quietly did less work and still "finished
+on time". With real work the same test reports 92%. The lower number is the
+true one.
+
+### Falsified: a declared chunk cost is not a usable baseline
+
+Preemption is detected by noticing a chunk took longer than it should have,
+which needs a trustworthy "should have". The nominal `chunk_us` is not one:
+measured on this target, the same chunk's uncontended cost varied by more
+than 2x within a single run. Against a fixed baseline that variance both
+hides real preemptions and manufactures false ones.
+
+The baseline is now observed, not declared —
+`engine_chunk_floor_us()` keeps the fastest wall time that chunk has ever
+achieved, which is the best available evidence of its cost with nobody
+competing. It ratchets downward and converges in the first few requests.
+
+The deadline estimate deliberately does *not* use that floor: the floor is
+the fastest a chunk has run, so budgeting remaining work with it would be
+optimistic exactly when the machine is busy. Remaining work is still priced
+at nominal, which errs towards stopping early.
+
+### Settled: QEMU on this host cannot produce the headline numbers
+
+In step 2 of the smoke test — one client, **no load at all** — a priority-40
+request was preempted 6 times and lost 9.3 ms. Nothing inside QNX can
+preempt a priority-40 thread on an otherwise idle system. That stolen time
+is the host: Windows and WSL2 descheduling the QEMU vCPU, which the guest
+cannot see and cannot distinguish from a real in-guest preemption.
+
+The consequence is that on this host `stolen_us` conflates two different
+things, and the host's contribution is the same order of magnitude as the
+20 ms deadline being measured. So open question 3 is answered: **final
+benchmark numbers must come from bare metal** (a Raspberry Pi 4/5), not
+from QEMU on a laptop. QEMU remains the right place to demonstrate the
+mechanism and to develop against; it is not a place to measure latency.
+
+### Exposed: the cost model is blind to the interference that causes misses
+
+The 8 missed deadlines have a specific cause worth stating. `sched_record()`
+updates the cost model only from requests with `preempted == 0`, so the
+model learns what a tier costs *cleanly* — 13.2 ms for detect/medium. That
+is the right answer to "what does this tier cost" and the wrong answer to
+"will it fit", because the stolen time that actually breaks the deadline is
+exactly what was excluded. The scheduler therefore picks medium, fits 13.2
+into a 16 ms budget, and then loses 3–10 ms to interference.
+
+Tier selection needs cost *plus* expected interference, as two tracked
+quantities rather than one. That is the substantive piece of week 2, and it
+is the real content of "deadline-aware" — not the tier table.

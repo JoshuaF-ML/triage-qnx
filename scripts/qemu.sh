@@ -36,6 +36,12 @@ RAM="${RAM:-2G}"
 TARGET_USER="${TARGET_USER:-root}"
 SSH_PORT="${SSH_PORT:-6022}"
 
+# The target's sshd has no password auth for root -- mkqnximage bakes a
+# public key into /data/home/root/.ssh/authorized_keys and that is the only
+# way in (--ssh-ident). A throwaway key is fine and is what we use: it
+# guards a local VM reachable only from this host's loopback.
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
+
 # One CPU by default, on purpose. With several cores an urgent request can
 # simply run on another core, and "it preempted the chat inference" becomes
 # unfalsifiable -- nothing was preempted, there was just a spare CPU. On a
@@ -44,9 +50,10 @@ SSH_PORT="${SSH_PORT:-6022}"
 CPUS="${CPUS:-1}"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-STAGE="$REPO/build/$ARCH"
+STAGE="$REPO/stage/$ARCH"   # where `make stage` puts the binaries
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR
+          -o IdentitiesOnly=yes -o BatchMode=yes -i $SSH_KEY"
 
 need_sdp() {
     command -v mkqnximage >/dev/null 2>&1 || {
@@ -63,6 +70,11 @@ ssh_target() {
 case "${1:-}" in
 build)
     need_sdp
+    if [ ! -f "$SSH_KEY.pub" ]; then
+        echo "error: no public key at $SSH_KEY.pub" >&2
+        echo "  generate one with: ssh-keygen -q -t ed25519 -N '' -f $SSH_KEY" >&2
+        exit 1
+    fi
     mkdir -p "$IMGDIR"
     cd "$IMGDIR"
     mkqnximage \
@@ -73,6 +85,7 @@ build)
         --ram="$RAM" \
         --ip=dhcp \
         --data-size=200 \
+        --ssh-ident="$SSH_KEY.pub" \
         --noprompt \
         --force \
         --clean \
@@ -95,7 +108,11 @@ run)
     fi
 
     rm -f output/qemu.out
-    qemu-system-x86_64 \
+    # setsid + nohup: without them QEMU is a child of this shell, and when
+    # the shell that started us exits -- which it does immediately when the
+    # script is driven from Windows via `wsl -- bash ...` -- the VM dies with
+    # it. The target has to outlive the command that booted it.
+    setsid nohup qemu-system-x86_64 \
         -smp "$CPUS" "${accel[@]}" \
         -m "$RAM" \
         -drive file=output/disk-qemu.vmdk,if=ide,id=drv0 \
@@ -133,7 +150,7 @@ ssh)
     ;;
 
 push)
-    [ -d "$STAGE" ] || { echo "error: $STAGE missing -- build first" >&2; exit 1; }
+    [ -d "$STAGE" ] || { echo "error: $STAGE missing -- run 'make stage' first" >&2; exit 1; }
     # shellcheck disable=SC2086
     scp $SSH_OPTS -P "$SSH_PORT" \
         "$STAGE/triage" "$STAGE/brake_reflex" "$STAGE/chat_load" \

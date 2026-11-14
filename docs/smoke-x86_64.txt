@@ -1,0 +1,247 @@
+
+=== 0. cleaning up any previous run
+
+=== 1. starting the resource manager
+triage: calibrated at 690 work units/us (2000us burn measured 982us)
+triage: serving /dev/triage (pool max 16 threads)
+triage: tier cost model (nominal)
+triage:   detect small    5 chunks x  1000us =   5000us
+triage:   detect medium   6 chunks x  2000us =  12000us
+triage:   detect large   13 chunks x  2000us =  26000us
+triage:   chat   small   10 chunks x  4000us =  40000us
+triage:   chat   medium  24 chunks x  5000us = 120000us
+triage:   chat   large   30 chunks x 10000us = 300000us
+  PASS /dev/triage exists
+crw-rw-rw-  1 root root 0,   1 2026-11-14 13:55 /dev/triage
+
+=== 2. one request, no load
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 13212us total= 13214us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 11941us total= 11944us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 20620us total= 20623us chunks= 6 preempt=6 stolen=9348us MISS (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 13256us total= 13259us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 18654us total= 18656us chunks= 6 preempt=1 stolen=6328us MET (degraded)
+brake_reflex: prio=40 deadline=20000us period=100000us
+  [   0] MET   13214us tier=medium prio=40/40 preempt=0 degraded
+  [   1] MET   11944us tier=medium prio=40/40 preempt=0 degraded
+  [   2] MISS  20623us tier=medium prio=40/40 preempt=6 degraded
+  [   3] MET   13259us tier=medium prio=40/40 preempt=0 degraded
+  [   4] MET   18656us tier=medium prio=40/40 preempt=1 degraded
+
+brake_reflex summary
+  requests  5
+  met       4 (80.0%)
+  missed    1
+  degraded  5
+  errors    0
+  mean      15539us
+  worst     20623us
+  preempted 2 req, 15676us stolen
+  prio      5 checked, 0 not inherited
+  FAIL requests answered but deadlines were missed with no load
+
+=== 3. priority inheritance
+  the two numbers in prio=A/B are the client priority and the
+  priority our server thread ran at. They must be identical at
+  whatever priority the client happens to be, so we ask twice from
+  two different priorities. brake_reflex checks every reply itself
+  and exits non-zero if any pair differs.
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 13163us total= 13165us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 11523us total= 11526us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17401us total= 17404us chunks= 6 preempt=3 stolen=4607us MET (degraded)
+brake_reflex: prio=40 deadline=20000us period=100000us
+  [   0] MET   13165us tier=medium prio=40/40 preempt=0 degraded
+  [   1] MET   11526us tier=medium prio=40/40 preempt=0 degraded
+  [   2] MET   17404us tier=medium prio=40/40 preempt=3 degraded
+
+brake_reflex summary
+  requests  3
+  met       3 (100.0%)
+  missed    0
+  degraded  3
+  errors    0
+  mean      14031us
+  worst     17404us
+  preempted 1 req, 4607us stolen
+  prio      3 checked, 0 not inherited
+triage: detect prio=12/12 deadline= 20000us tier=medium queue=   1us compute= 19160us total= 19161us chunks= 6 preempt=3 stolen=6840us MET (degraded)
+triage: detect prio=12/12 deadline= 20000us tier=medium queue=   3us compute= 16685us total= 16688us chunks= 4 preempt=4 stolen=9169us MET (degraded)
+triage: detect prio=12/12 deadline= 20000us tier=medium queue=   5us compute= 14965us total= 14970us chunks= 3 preempt=3 stolen=9328us MET (degraded)
+brake_reflex: prio=12 deadline=20000us period=100000us
+  [   0] MET   19161us tier=medium prio=12/12 preempt=3 degraded
+  [   1] MET   16688us tier=medium prio=12/12 preempt=4 degraded
+  [   2] MET   14970us tier=medium prio=12/12 preempt=3 degraded
+
+brake_reflex summary
+  requests  3
+  met       3 (100.0%)
+  missed    0
+  degraded  3
+  errors    0
+  mean      16939us
+  worst     19161us
+  preempted 3 req, 25337us stolen
+  prio      3 checked, 0 not inherited
+  PASS work ran at the client's priority, from both prio 40 and prio 12
+
+=== 4. urgent work under a low-priority flood
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=351166us total=351168us chunks=30 preempt=0 stolen=0us MET
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=485282us total=485284us chunks=30 preempt=22 stolen=153918us MET
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=  61us compute=492906us total=492967us chunks=30 preempt=30 stolen=192887us MET
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=530768us total=530770us chunks=30 preempt=30 stolen=230731us MET
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   3us compute=682101us total=682104us chunks=30 preempt=30 stolen=382052us MET
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   1us compute=537675us total=537676us chunks=30 preempt=30 stolen=237644us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19157us total= 19160us chunks= 6 preempt=6 stolen=7888us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=516714us total=516716us chunks=30 preempt=30 stolen=216696us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 19285us total= 19287us chunks= 6 preempt=6 stolen=8013us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=565916us total=565918us chunks=30 preempt=30 stolen=265872us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 14147us total= 14149us chunks= 3 preempt=3 stolen=8510us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue= 122us compute=587142us total=587264us chunks=30 preempt=30 stolen=286705us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 21339us total= 21341us chunks= 6 preempt=6 stolen=10070us MISS (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   1us compute=527261us total=527262us chunks=30 preempt=30 stolen=227237us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19653us total= 19656us chunks= 6 preempt=6 stolen=8383us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=478436us total=478438us chunks=30 preempt=28 stolen=168569us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19949us total= 19952us chunks= 6 preempt=6 stolen=8677us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   3us compute=599681us total=599684us chunks=30 preempt=30 stolen=299647us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 20905us total= 20908us chunks= 6 preempt=6 stolen=9635us MISS (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=558579us total=558581us chunks=30 preempt=30 stolen=258548us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19426us total= 19429us chunks= 6 preempt=6 stolen=8156us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=498708us total=498710us chunks=30 preempt=27 stolen=183981us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17858us total= 17861us chunks= 6 preempt=6 stolen=6590us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=474693us total=474695us chunks=30 preempt=26 stolen=156368us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 19333us total= 19335us chunks= 6 preempt=6 stolen=8061us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   3us compute=593464us total=593467us chunks=30 preempt=28 stolen=283663us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 20497us total= 20499us chunks= 6 preempt=6 stolen=9226us MISS (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   3us compute=507044us total=507047us chunks=30 preempt=29 stolen=202231us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18680us total= 18683us chunks= 6 preempt=6 stolen=7409us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=470056us total=470058us chunks=30 preempt=21 stolen=128272us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17087us total= 17090us chunks= 6 preempt=3 stolen=3358us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=439415us total=439417us chunks=30 preempt=10 stolen=55403us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 21154us total= 21156us chunks= 6 preempt=6 stolen=9885us MISS (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   3us compute=537497us total=537500us chunks=30 preempt=20 stolen=196003us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 20236us total= 20238us chunks= 6 preempt=5 stolen=8051us MISS (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=460261us total=460263us chunks=30 preempt=15 stolen=92662us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17658us total= 17661us chunks= 6 preempt=5 stolen=5471us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=456491us total=456493us chunks=30 preempt=10 stolen=75261us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17301us total= 17304us chunks= 6 preempt=5 stolen=5109us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   2us compute=514615us total=514617us chunks=30 preempt=22 stolen=177394us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 13948us total= 13953us chunks= 2 preempt=2 stolen=10187us MET (degraded)
+triage: chat   prio=10/10 deadline=2000000us tier=large  queue=   4us compute=598109us total=598113us chunks=30 preempt=25 stolen=277664us MET
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 18058us total= 18063us chunks= 4 preempt=4 stolen=10536us MET (degraded)
+chat_load: 4 threads at prio 10, deadline 2000000us, 12s
+chat_load: 24 requests, 24 met deadline, 2.0 req/s
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 15611us total= 15617us chunks= 2 preempt=2 stolen=11848us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 13380us total= 13386us chunks= 2 preempt=2 stolen=9623us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 15164us total= 15169us chunks= 3 preempt=3 stolen=9524us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 12300us total= 12306us chunks= 2 preempt=2 stolen=8543us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 16195us total= 16199us chunks= 3 preempt=3 stolen=10557us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 18119us total= 18123us chunks= 3 preempt=3 stolen=12478us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 18259us total= 18265us chunks= 2 preempt=2 stolen=14499us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17292us total= 17295us chunks= 4 preempt=4 stolen=9776us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 20923us total= 20926us chunks= 6 preempt=6 stolen=9641us MISS (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=  20us compute= 19304us total= 19324us chunks= 4 preempt=4 stolen=11698us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 17252us total= 17256us chunks= 4 preempt=4 stolen=9737us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 19521us total= 19525us chunks= 5 preempt=5 stolen=10125us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 14166us total= 14170us chunks= 3 preempt=3 stolen=8528us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 14097us total= 14103us chunks= 2 preempt=2 stolen=10335us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 19203us total= 19207us chunks= 5 preempt=5 stolen=9811us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 17735us total= 17739us chunks= 3 preempt=3 stolen=12097us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 19404us total= 19408us chunks= 4 preempt=4 stolen=11884us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 14229us total= 14235us chunks= 3 preempt=3 stolen=8590us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 17040us total= 17044us chunks= 4 preempt=4 stolen=9527us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 16560us total= 16563us chunks= 4 preempt=4 stolen=9045us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 16022us total= 16026us chunks= 4 preempt=4 stolen=8509us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 16995us total= 17000us chunks= 3 preempt=3 stolen=11358us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 15105us total= 15111us chunks= 3 preempt=3 stolen=9470us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18248us total= 18251us chunks= 5 preempt=5 stolen=8857us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 18450us total= 18455us chunks= 3 preempt=3 stolen=12771us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 14669us total= 14673us chunks= 3 preempt=3 stolen=9032us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 12960us total= 12964us chunks= 2 preempt=2 stolen=9201us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 17349us total= 17353us chunks= 3 preempt=3 stolen=11714us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 12101us total= 12105us chunks= 2 preempt=2 stolen=8343us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 13493us total= 13499us chunks= 2 preempt=2 stolen=9733us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18794us total= 18797us chunks= 6 preempt=3 stolen=5164us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 18016us total= 18020us chunks= 5 preempt=4 stolen=7711us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 18491us total= 18495us chunks= 4 preempt=4 stolen=10972us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 17384us total= 17390us chunks= 3 preempt=3 stolen=11747us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 13092us total= 13097us chunks= 2 preempt=2 stolen=9334us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 15331us total= 15334us chunks= 6 preempt=2 stolen=2011us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19667us total= 19670us chunks= 4 preempt=4 stolen=12150us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 17420us total= 17425us chunks= 3 preempt=3 stolen=11782us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 17658us total= 17663us chunks= 6 preempt=3 stolen=5221us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 17015us total= 17020us chunks= 6 preempt=1 stolen=2490us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 18256us total= 18260us chunks= 6 preempt=3 stolen=5409us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 15798us total= 15802us chunks= 3 preempt=3 stolen=10164us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 15050us total= 15053us chunks= 6 preempt=1 stolen=1006us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 17103us total= 17107us chunks= 4 preempt=4 stolen=9587us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 16885us total= 16889us chunks= 4 preempt=4 stolen=9371us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 14299us total= 14304us chunks= 3 preempt=3 stolen=8664us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 13777us total= 13780us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   4us compute= 20544us total= 20548us chunks= 6 preempt=5 stolen=8636us MISS (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 13391us total= 13393us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 17309us total= 17315us chunks= 6 preempt=3 stolen=4821us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17864us total= 17867us chunks= 6 preempt=5 stolen=6110us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17040us total= 17043us chunks= 4 preempt=4 stolen=9523us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 18873us total= 18875us chunks= 6 preempt=4 stolen=6440us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 16052us total= 16054us chunks= 6 preempt=2 stolen=2950us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 14619us total= 14622us chunks= 6 preempt=1 stolen=965us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17372us total= 17375us chunks= 6 preempt=3 stolen=4398us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18612us total= 18615us chunks= 6 preempt=4 stolen=5640us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 14139us total= 14142us chunks= 3 preempt=3 stolen=8504us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 14987us total= 14992us chunks= 2 preempt=2 stolen=11227us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 16820us total= 16826us chunks= 2 preempt=2 stolen=13057us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 12977us total= 12983us chunks= 2 preempt=2 stolen=9216us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 13813us total= 13819us chunks= 2 preempt=2 stolen=10051us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 19496us total= 19501us chunks= 5 preempt=4 stolen=9497us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17850us total= 17853us chunks= 6 preempt=3 stolen=5155us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 15175us total= 15180us chunks= 3 preempt=3 stolen=9539us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 12139us total= 12144us chunks= 2 preempt=2 stolen=8381us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 12469us total= 12475us chunks= 2 preempt=2 stolen=8711us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   7us compute= 17573us total= 17580us chunks= 3 preempt=3 stolen=11939us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 14356us total= 14362us chunks= 2 preempt=2 stolen=10597us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   6us compute= 14178us total= 14184us chunks= 2 preempt=2 stolen=10418us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   5us compute= 19541us total= 19546us chunks= 6 preempt=4 stolen=6862us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 21237us total= 21240us chunks= 6 preempt=4 stolen=9156us MISS (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 13576us total= 13578us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18877us total= 18880us chunks= 5 preempt=5 stolen=9486us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 16139us total= 16142us chunks= 6 preempt=2 stolen=2856us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 14162us total= 14165us chunks= 6 preempt=0 stolen=0us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 17750us total= 17753us chunks= 6 preempt=3 stolen=4415us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 18404us total= 18407us chunks= 4 preempt=4 stolen=10890us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 15326us total= 15329us chunks= 6 preempt=1 stolen=1755us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   3us compute= 19353us total= 19356us chunks= 6 preempt=3 stolen=6458us MET (degraded)
+triage: detect prio=40/40 deadline= 20000us tier=medium queue=   2us compute= 16311us total= 16313us chunks= 6 preempt=3 stolen=3640us MET (degraded)
+brake_reflex: prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       92 (92.0%)
+  missed    8
+  degraded  100
+  errors    0
+  mean      16895us
+  worst     21341us
+  preempted 96 req, 814145us stolen
+  prio      100 checked, 0 not inherited
+  FAIL detection missed deadlines under load -- see the summary above
+
+=== server counters
+requests        124
+deadlines met   116 (93.5%)
+deadlines miss  8
+degraded        100
+preemptions     919
+worst total     682104us
+worst queue     122us
+client prio     10..40
+by tier         small=0 medium=100 large=24 
+by task         detect=100 chat=24 
+cost model (measured, us)
+  detect small=5000 medium=13218 large=26000 
+  chat   small=40000 medium=120000 large=312791 
+
+=== shutting down
+
+triage: shutting down on signal 15
+triage: requests=124 met=116 missed=8 degraded=100 preemptions=919 worst_total=682104us
+
+2 passed, 2 failed
