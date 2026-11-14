@@ -1,0 +1,28 @@
+# build output
+build/
+stage/
+*.o
+*.d
+*.so
+*.a
+
+# QNX / QEMU images
+images/
+*.img
+*.ifs
+*.qcow2
+
+# models (fetched, never committed)
+models/*.gguf
+models/*.bin
+
+# editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# benchmark output
+bench/results/*.csv
+bench/results/*.json

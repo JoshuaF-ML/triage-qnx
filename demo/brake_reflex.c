@@ -1,0 +1,134 @@
+/*
+ * brake_reflex.c -- the safety-critical client.
+ *
+ * Stands in for the part of a car or robot that must not wait: it asks
+ * "is that a pedestrian?" on a fixed period, with a hard deadline, at a
+ * high priority. It never asks for a particular model -- it tells Triage
+ * how long it can wait and accepts whatever fits.
+ *
+ * Run it alongside demo/chat_load, which floods the same /dev/triage with
+ * low-priority chat requests. The whole claim of this project is that
+ * this program's numbers do not change when that flood starts.
+ */
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "triage.h"
+
+static void sleep_us(uint64_t us)
+{
+    struct timespec ts;
+
+    ts.tv_sec  = (time_t)(us / 1000000u);
+    ts.tv_nsec = (long)((us % 1000000u) * 1000u);
+    nanosleep(&ts, NULL);
+}
+
+static void usage(const char *a0)
+{
+    fprintf(stderr,
+            "usage: %s [-P prio] [-d deadline_us] [-p period_us] [-n count] [-q]\n"
+            "  -P prio         priority to run at (default 40)\n"
+            "  -d deadline_us  deadline per request (default 20000 = 20ms)\n"
+            "  -p period_us    how often to ask (default 50000 = 50ms)\n"
+            "  -n count        number of requests (default 200, 0 = forever)\n"
+            "  -q              summary only\n",
+            a0);
+}
+
+int main(int argc, char **argv)
+{
+    int      prio = 40, quiet = 0, c, fd;
+    uint32_t deadline_us = 20000;
+    uint64_t period_us = 50000;
+    long     count = 200, i;
+    unsigned met = 0, missed = 0, degraded = 0, errors = 0;
+    uint64_t worst_us = 0, sum_us = 0;
+
+    while ((c = getopt(argc, argv, "P:d:p:n:qh")) != -1) {
+        switch (c) {
+        case 'P': prio = atoi(optarg); break;
+        case 'd': deadline_us = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case 'p': period_us = strtoull(optarg, NULL, 10); break;
+        case 'n': count = strtol(optarg, NULL, 10); break;
+        case 'q': quiet = 1; break;
+        case 'h': usage(argv[0]); return 0;
+        default:  usage(argv[0]); return 1;
+        }
+    }
+
+    /* Be urgent. This is the only thing we do to get urgent AI: QNX
+     * carries this priority into the server on every request. */
+    if (triage_set_priority(prio) != 0) {
+        fprintf(stderr, "brake_reflex: cannot set priority %d: %s\n"
+                        "  (raising priority needs PROCMGR_AID_PRIORITY; try as root)\n",
+                prio, strerror(errno));
+        return 1;
+    }
+
+    if ((fd = triage_open(NULL)) < 0) {
+        fprintf(stderr, "brake_reflex: open %s: %s\n",
+                TRIAGE_DEV_PATH, strerror(errno));
+        return 1;
+    }
+
+    printf("brake_reflex: prio=%d deadline=%uus period=%lluus\n",
+           triage_get_priority(), deadline_us,
+           (unsigned long long)period_us);
+
+    for (i = 0; count == 0 || i < count; i++) {
+        triage_reply_t rep;
+
+        if (triage_ask(fd, TRIAGE_TASK_DETECT, "front camera frame",
+                       deadline_us, &rep) != 0) {
+            errors++;
+            if (!quiet)
+                printf("  [%4ld] ERROR %s\n", i, strerror(errno));
+            sleep_us(period_us);
+            continue;
+        }
+
+        if (rep.deadline_met)
+            met++;
+        else
+            missed++;
+        if (rep.degraded)
+            degraded++;
+        sum_us += rep.total_us;
+        if (rep.total_us > worst_us)
+            worst_us = rep.total_us;
+
+        if (!quiet)
+            printf("  [%4ld] %-4s %6lluus tier=%-6s prio=%d/%d preempt=%u%s\n",
+                   i,
+                   rep.deadline_met ? "MET" : "MISS",
+                   (unsigned long long)rep.total_us,
+                   triage_tier_name((triage_tier_t)rep.tier_used),
+                   rep.client_prio, rep.server_prio,
+                   rep.preempted,
+                   rep.degraded ? " degraded" : "");
+
+        sleep_us(period_us);
+    }
+
+    printf("\nbrake_reflex summary\n"
+           "  requests  %u\n"
+           "  met       %u (%.1f%%)\n"
+           "  missed    %u\n"
+           "  degraded  %u\n"
+           "  errors    %u\n"
+           "  mean      %lluus\n"
+           "  worst     %lluus\n",
+           met + missed,
+           met, (met + missed) ? 100.0 * met / (met + missed) : 0.0,
+           missed, degraded, errors,
+           (unsigned long long)((met + missed) ? sum_us / (met + missed) : 0),
+           (unsigned long long)worst_us);
+
+    triage_close(fd);
+    return missed ? 1 : 0;
+}
