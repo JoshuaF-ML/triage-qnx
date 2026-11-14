@@ -31,6 +31,16 @@
  *   pthread_getschedparam() in io_devctl() -- OUR priority, proving the two
  *                                             are the same number
  */
+/*
+ * QNX's thread pool is generic: the type its callbacks take is whatever
+ * THREAD_POOL_PARAM_T is defined to. It defaults to resmgr_context_t,
+ * but we hand the pool the dispatch_* functions, which work in terms of
+ * dispatch_context_t. Defining this before the includes is the documented
+ * way to line the prototypes up; without it, the four pool_attr
+ * assignments in main() are incompatible-pointer errors.
+ */
+#define THREAD_POOL_PARAM_T dispatch_context_t
+
 #include <errno.h>
 #include <pthread.h>
 #include <sched.h>

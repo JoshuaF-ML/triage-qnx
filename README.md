@@ -62,7 +62,7 @@ Hackathon, submission 14 Dec 2026).
 | Real inference backend (llama.cpp + small detector) | **stand-in load for now** |
 | First-come-first-served baseline server for comparison | planned, week 2 |
 | Car sim + web dashboard | planned, week 3 |
-| Adaptive Partitioning configuration | planned, week 3 |
+| CPU budget protection | redesigned — see below |
 | Benchmark numbers on hardware | planned, week 4 |
 
 The compute engine currently burns a calibrated number of microseconds per
@@ -86,6 +86,31 @@ For a Raspberry Pi 4/5 target:
 
 ```bash
 make ARCH=aarch64le stage
+```
+
+### Building from Windows via WSL2
+
+SDP 8.0's `qnxsdp-env.sh` does not export into non-interactive shells, so
+driving the build from Windows needs the environment set explicitly.
+[`scripts/wsl-build.sh`](scripts/wsl-build.sh) does that:
+
+```bash
+wsl -d Ubuntu -- bash scripts/wsl-build.sh
+wsl -d Ubuntu -- bash scripts/wsl-build.sh ARCH=aarch64le
+```
+
+[`scripts/wsl-env.sh`](scripts/wsl-env.sh) runs any SDP command the same
+way — `mkqnximage`, `qcc`, `mkifs`:
+
+```bash
+wsl -d Ubuntu -- bash scripts/wsl-env.sh mkqnximage --help
+```
+
+Booting a QEMU target also needs QEMU itself, which SDP does not install.
+Once, as root:
+
+```bash
+wsl -d Ubuntu -- sudo bash scripts/wsl-deps.sh
 ```
 
 ## Run
@@ -135,7 +160,14 @@ written on Linux — the mechanism it is built on does not exist there.
 | **Channel semantics** | `dispatch_create()` in `main()`, deliberately *without* `_NTO_CHF_FIXED_PRIORITY` | The one line that makes inheritance happen. There is a comment there telling future contributors not to "fix" it. |
 | **Thread pool** | `thread_pool_create()` in `main()` | Inheritance only buys anything if an urgent message can be received while a lazy request is still computing. |
 | **Cycle-accurate timing** | `ClockCycles()` and `SYSPAGE_ENTRY(qtime)->cycles_per_sec` in [`server/engine.c`](server/engine.c) | Microsecond measurement without syscall overhead in the measurement path. |
-| **Adaptive Partitioning** | planned, week 3 | A hard ceiling on low-priority AI, so chat can never starve control loops even in pathological cases. |
+| **CPU budget enforcement** | planned — see note below | A ceiling on low-priority AI, so chat can never starve control loops even in pathological cases. |
+
+> **Note on Adaptive Partitioning.** The original design used QNX Adaptive
+> Partitioning for this. It cannot: **APS was discontinued in QNX SDP 8.0**
+> and QNX OS 8.0 does not support it. `mkqnximage` on SDP 8.0 offers no
+> partitioning option, and the QoS packages are not available under the
+> non-commercial licence. The budget ceiling is therefore being rebuilt on
+> what 8.0 does have — see [`docs/architecture.md`](docs/architecture.md).
 
 Every reply contains `client_prio` and `server_prio`
 ([`common/triage_proto.h`](common/triage_proto.h)). Run `./brake_reflex -P 40`

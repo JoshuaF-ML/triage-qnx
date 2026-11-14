@@ -121,19 +121,49 @@ The stronger evidence is a kernel trace (`tracelogger` /
 the priority-40 thread mid-inference. That is the artifact for the video.
 The reply fields are the version anyone can reproduce in five seconds.
 
-## Adaptive Partitioning (week 3, and why it is not redundant)
+## Budget protection, and the death of pillar 4 as designed
 
 Priority inheritance protects the *urgent* work. It does nothing for the
-opposite failure: a flood of high-priority AI requests starving the
-control loops that are not using AI at all. Priority says "who first", not
-"how much in total".
+opposite failure: a flood of AI requests starving the control loops that
+are not using AI at all. Priority says "who first", not "how much in
+total". Something has to cap the total.
 
-Adaptive Partitioning puts a CPU budget around the whole Triage process,
-or around partitions within it, so low-priority AI is capped by
-construction rather than by good behaviour. Availability on the
-non-commercial image is an open question being checked during the setup
-gate; if it is not available, the design degrades to priority-only and the
-README will say so instead of implying otherwise.
+The original design used QNX **Adaptive Partitioning** for this. That is
+not available:
+
+- QNX's SDP 8.0 component discontinuation notice lists the adaptive
+  partitioning scheduler as **Discontinued**, with the replacement given
+  as N/A.
+- The 8.0 IDE user guide states plainly that QNX OS 8.0 does not support
+  adaptive partitioning, so an 8.0 target sends no APS data at all.
+- Corroborated locally: `mkqnximage --help` on our SDP 8.0 install offers
+  no partitioning option, and the `com.qnx.qnx800.target.qos.group`
+  packages are marked unavailable under the non-commercial licence.
+
+Every APS tutorial still in circulation describes 6.x or 7.x. This was
+listed as a medium risk in the build plan with "check on day 1" as the
+mitigation; the check came back negative, so the fallback applies.
+
+**What replaces it.** Two candidates, to be decided in week 2:
+
+1. **POSIX sporadic scheduling (`SCHED_SPORADIC`)**, if QNX 8.0 supports
+   it — to be verified, not assumed, given what just happened to APS. A
+   sporadic thread runs at a high priority until it exhausts a CPU budget,
+   then drops to a low priority until the budget replenishes. That is
+   budget protection enforced by the kernel, which is a stronger claim
+   than anything we could implement ourselves, and it is a genuine QNX
+   real-time service for the bonus-prize criteria.
+2. **Budget accounting at chunk boundaries**, in `server/sched.c`. We
+   already measure CPU time per chunk and already have a decision point
+   between chunks. A token bucket per priority class — refilled on a
+   timer, debited per chunk, with low-priority work made to wait when its
+   bucket is empty — gives a hard ceiling in our own code. Weaker than
+   kernel enforcement, but entirely within our control and impossible to
+   have removed from under us.
+
+Option 1 is better if it exists. Option 2 is the guaranteed fallback and
+can be built regardless. Whatever ships, the README states what actually
+enforces the ceiling rather than implying an OS feature we are not using.
 
 ## Claims we have not earned yet
 
@@ -149,7 +179,22 @@ quietly dropped.
   which is noisy. Final numbers go on a Raspberry Pi if one is available,
   and will be reported as *measured*, never *guaranteed*.
 - **"Chat can never starve safety."** True for priority; not yet enforced
-  as a budget. Needs Adaptive Partitioning.
+  as a budget. Needs whichever budget mechanism replaces APS.
+
+## Measuring on one CPU, on purpose
+
+`scripts/qemu.sh` builds the target with `--cpu=1` by default. This is a
+methodological choice, not a limitation.
+
+With two or more cores, an urgent request can simply run on an idle core.
+Nothing is preempted; there was just spare capacity. The headline numbers
+would look excellent and would prove nothing, and a judge who thinks about
+it for ten seconds would notice. On a single core the kernel *must* take
+the CPU away from the priority-10 chat inference to serve the priority-40
+detection — which is the behaviour Triage exists to demonstrate.
+
+The benchmark should report both: one core to show the mechanism, more
+cores to show it does not get worse.
 
 ## Open questions
 
@@ -157,8 +202,9 @@ quietly dropped.
    the chat side. The detection side wants something small and
    chunkable. Decide in week 1, because the chunk-granularity requirement
    above constrains the choice.
-2. **Is Adaptive Partitioning in the non-commercial image?** Decides
-   whether pillar 4 exists.
+2. ~~Is Adaptive Partitioning in the non-commercial image?~~ **Answered:
+   no — it is discontinued in QNX 8.0 entirely.** See above. The open
+   question is now which replacement to build.
 3. **QEMU or Raspberry Pi for final numbers.** Affects how strongly the
    benchmark can be stated.
 4. **Unblock handling.** If a client is killed or times out while its
