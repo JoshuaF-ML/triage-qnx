@@ -2,22 +2,30 @@
 #
 # qemu.sh -- build, boot and load a QNX 8.0 QEMU target for Triage.
 #
-#   ./scripts/qemu.sh build     # create the VM image
-#   ./scripts/qemu.sh run       # boot it (headless)
-#   ./scripts/qemu.sh ip        # print the target's IP
-#   ./scripts/qemu.sh push      # copy the built binaries to /data on target
+#   ./scripts/qemu.sh build     # create the VM image (mkqnximage)
+#   ./scripts/qemu.sh run       # boot it headless
 #   ./scripts/qemu.sh ssh       # shell into the target
+#   ./scripts/qemu.sh push      # copy built binaries to /data on target
 #   ./scripts/qemu.sh smoke     # push, then run the smoke test on target
+#   ./scripts/qemu.sh console   # tail the target's serial console
 #   ./scripts/qemu.sh stop
 #
-# Every flag here was read from `mkqnximage --help` on SDP 8.0, not guessed.
-# Binaries get in over SSH after boot rather than baked into the image:
-# mkqnximage's --extra-dirs is for its own content files, and rebuilding an
-# image for every code change would be slow and painful.
+# On a WSL2 host, run through scripts/wsl-env.sh so SDP is on PATH:
+#   wsl -d Ubuntu -- bash scripts/wsl-env.sh bash scripts/qemu.sh build
 #
-# On a WSL2 host run this through scripts/wsl-env.sh so the SDP environment
-# is set:
-#   wsl -d Ubuntu -- bash scripts/wsl-env.sh ./scripts/qemu.sh build
+# WHY WE DO NOT USE mkqnximage --run
+# ----------------------------------
+# SDP's own runimage script only offers bridged networking: both its 'nat'
+# and 'bridge' modes end up at `-netdev bridge`, which needs
+# qemu-bridge-helper to be setuid root and a host bridge interface to
+# exist. Under WSL2 that means root for every boot and a bridge that does
+# not survive much. QEMU's user-mode ("slirp") networking needs neither:
+# it gives the guest DHCP and NAT in userspace, and we forward one host
+# port to the target's SSH. So we invoke QEMU ourselves, mirroring the
+# arguments runimage uses for x86_64, with the network backend swapped.
+#
+# The cost is that the target is not reachable from the LAN. We only ever
+# need SSH from this host, so that costs us nothing.
 
 set -eu
 
@@ -26,6 +34,7 @@ IMGDIR="${IMGDIR:-$HOME/qnx-images/triage-$ARCH}"
 HOST_NAME="${HOST_NAME:-triage}"
 RAM="${RAM:-2G}"
 TARGET_USER="${TARGET_USER:-root}"
+SSH_PORT="${SSH_PORT:-6022}"
 
 # One CPU by default, on purpose. With several cores an urgent request can
 # simply run on another core, and "it preempted the chat inference" becomes
@@ -37,27 +46,18 @@ CPUS="${CPUS:-1}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 STAGE="$REPO/build/$ARCH"
 
-need_sdp() {
-    if ! command -v mkqnximage >/dev/null 2>&1; then
-        echo "error: mkqnximage not on PATH." >&2
-        echo "       run this through scripts/wsl-env.sh, or source" >&2
-        echo "       ~/qnx800/qnxsdp-env.sh in an interactive shell." >&2
-        exit 1
-    fi
-}
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
-target_ip() {
-    (cd "$IMGDIR" && mkqnximage --getip 2>/dev/null | tr -d '\r' | tail -1)
+need_sdp() {
+    command -v mkqnximage >/dev/null 2>&1 || {
+        echo "error: mkqnximage not on PATH -- run via scripts/wsl-env.sh" >&2
+        exit 1
+    }
 }
 
 ssh_target() {
-    ip="$(target_ip)"
-    if [ -z "$ip" ]; then
-        echo "error: no IP -- is the VM running? try: $0 run" >&2
-        exit 1
-    fi
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "$TARGET_USER@$ip" "$@"
+    # shellcheck disable=SC2086
+    ssh $SSH_OPTS -p "$SSH_PORT" "$TARGET_USER@localhost" "$@"
 }
 
 case "${1:-}" in
@@ -77,49 +77,90 @@ build)
         --force \
         --clean \
         --build
-    echo
     echo "image built in $IMGDIR (cpu=$CPUS ram=$RAM)"
     ;;
+
 run)
-    need_sdp
     cd "$IMGDIR"
-    mkqnximage --run=-h
-    sleep 5
-    echo "target IP: $(target_ip)"
-    ;;
-ip)
-    need_sdp
-    target_ip
-    ;;
-push)
-    if [ ! -d "$STAGE" ]; then
-        echo "error: $STAGE missing -- build first" >&2
-        exit 1
+    if [ -f output/qemu.pid ] && kill -0 "$(cat output/qemu.pid)" 2>/dev/null; then
+        echo "already running (pid $(cat output/qemu.pid))"
+        exit 0
     fi
-    ip="$(target_ip)"
-    echo "copying to $TARGET_USER@$ip:/data/"
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        "$STAGE/triage" "$STAGE/brake_reflex" "$STAGE/chat_load" \
-        "$STAGE/triage_stat" "$REPO/scripts/smoke.sh" \
-        "$TARGET_USER@$ip:/data/"
-    ssh_target "chmod +x /data/triage /data/brake_reflex /data/chat_load /data/triage_stat /data/smoke.sh"
-    echo "done"
+
+    if [ -w /dev/kvm ]; then
+        accel=(--enable-kvm --cpu host)
+    else
+        echo "warning: no write access to /dev/kvm -- emulating, will be slow"
+        accel=(--cpu max)
+    fi
+
+    rm -f output/qemu.out
+    qemu-system-x86_64 \
+        -smp "$CPUS" "${accel[@]}" \
+        -m "$RAM" \
+        -drive file=output/disk-qemu.vmdk,if=ide,id=drv0 \
+        -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
+        -device virtio-net-pci,netdev=net0 \
+        -object rng-random,filename=/dev/urandom,id=rng0 \
+        -device virtio-rng-pci,rng=rng0 \
+        -kernel output/ifs.bin \
+        -pidfile output/qemu.pid \
+        -nographic \
+        -serial file:output/qemu.out \
+        >/dev/null 2>&1 </dev/null &
+
+    echo "booting; serial console -> $IMGDIR/output/qemu.out"
+    for i in $(seq 1 40); do
+        sleep 2
+        if ssh_target true 2>/dev/null; then
+            echo "target up: ssh -p $SSH_PORT $TARGET_USER@localhost"
+            exit 0
+        fi
+    done
+    echo "error: target did not answer SSH on port $SSH_PORT within 80s" >&2
+    echo "last console output:" >&2
+    tail -30 output/qemu.out >&2 || true
+    exit 1
     ;;
+
+console)
+    tail -f "$IMGDIR/output/qemu.out"
+    ;;
+
 ssh)
     shift || true
     ssh_target "$@"
     ;;
+
+push)
+    [ -d "$STAGE" ] || { echo "error: $STAGE missing -- build first" >&2; exit 1; }
+    # shellcheck disable=SC2086
+    scp $SSH_OPTS -P "$SSH_PORT" \
+        "$STAGE/triage" "$STAGE/brake_reflex" "$STAGE/chat_load" \
+        "$STAGE/triage_stat" "$REPO/scripts/smoke.sh" \
+        "$TARGET_USER@localhost:/data/"
+    ssh_target "chmod +x /data/triage /data/brake_reflex /data/chat_load /data/triage_stat /data/smoke.sh"
+    echo "pushed to /data"
+    ;;
+
 smoke)
     "$0" push
     ssh_target "cd /data && ./smoke.sh"
     ;;
+
 stop)
-    need_sdp
     cd "$IMGDIR"
-    mkqnximage --stop
+    if [ -f output/qemu.pid ]; then
+        kill "$(cat output/qemu.pid)" 2>/dev/null || true
+        rm -f output/qemu.pid
+        echo "stopped"
+    else
+        echo "not running"
+    fi
     ;;
+
 *)
-    echo "usage: $0 {build|run|ip|push|ssh|smoke|stop}" >&2
+    echo "usage: $0 {build|run|console|ssh|push|smoke|stop}" >&2
     exit 1
     ;;
 esac

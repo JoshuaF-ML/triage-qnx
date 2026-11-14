@@ -17,8 +17,22 @@ fi
 
 TARGET_USER="${SUDO_USER:-user}"
 
+# An apt run killed partway through leaves dpkg half-configured, and every
+# later install refuses until it is repaired. Cheap to run when it is not
+# needed, so always run it.
+echo "==> repairing any interrupted package state"
+dpkg --configure -a || true
+
 echo "==> updating package lists"
 apt-get update -qq
+
+# This distro arrived with a half-finished upgrade: vim, vim-runtime and
+# vim-tiny at mismatched versions. apt refuses to install ANYTHING while
+# unmet dependencies exist, so the repair has to happen before QEMU.
+echo "==> fixing broken dependencies"
+apt-get --fix-broken install -y || true
+apt-get install -y --only-upgrade vim vim-runtime vim-tiny || true
+dpkg --configure -a || true
 
 echo "==> installing QEMU and networking tools"
 apt-get install -y --no-install-recommends \
