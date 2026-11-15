@@ -70,12 +70,14 @@ static void log_request(const triage_request_t *req, const triage_reply_t *rep)
 {
     fprintf(stderr,
             "triage: %-6s prio=%d/%d deadline=%6uus tier=%-6s "
+            "est=%6uus infl=%3u%% "
             "queue=%4lluus compute=%6lluus total=%6lluus "
             "chunks=%2u preempt=%u stolen=%lluus %s%s\n",
             engine_task_name((triage_task_t)req->task),
             rep->client_prio, rep->server_prio,
             req->deadline_us,
             engine_tier_name((triage_tier_t)rep->tier_used),
+            rep->est_used_us, rep->infl_pct,
             (unsigned long long)rep->queue_us,
             (unsigned long long)rep->compute_us,
             (unsigned long long)rep->total_us,
@@ -187,7 +189,7 @@ static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
         triage_request_t   req;   /* copy: msg->i and msg->o overlap */
         triage_reply_t     rep;
         triage_tier_t      tier;
-        uint32_t           degraded = 0;
+        sched_decision_t   dec;
         struct sched_param param;
         int                policy = 0;
 
@@ -219,13 +221,21 @@ static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
         else
             rep.server_prio = -1;
 
+        /* Tier selection needs the client's priority, because how much
+         * interference this request should expect depends on it. Note that
+         * rep.client_prio is already set above -- the same number that is
+         * the evidence for inheritance is also an input to the decision. */
         tier = sched_pick_tier((triage_task_t)req.task, req.deadline_us,
                                (triage_tier_t)req.want_tier, req.flags,
-                               &degraded);
+                               rep.client_prio, &dec);
         if (tier == TRIAGE_TIER_NONE)
             return ETIME;   /* nothing fits, and the caller said not to try */
 
-        run_request(&req, &rep, arrival_us, tier, degraded);
+        rep.est_used_us = dec.est_used_us;
+        rep.infl_pct    = dec.infl_pct;
+        rep.prio_band   = dec.prio_band;
+
+        run_request(&req, &rep, arrival_us, tier, dec.degraded);
         sched_record((triage_task_t)req.task, &rep);
 
         if (verbose)

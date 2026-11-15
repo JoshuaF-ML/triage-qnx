@@ -20,14 +20,16 @@ cost model decides *how much* model to run.
   |  io_devctl()                                            |
   |    1. read client priority from ctp->info.priority      |
   |    2. read OUR priority -- they are the same            |
-  |    3. sched_pick_tier(task, deadline, estimates)         |
+  |    3. sched_pick_tier(): clean cost x expected interference         |
   |    4. run_request(): chunk, measure, re-check deadline  |
   |    5. reply with the answer AND the evidence            |
   +---------------------------------------------------------+
          ^
-         | Adaptive Partitioning (week 3): a CPU budget ceiling
-         | for the low-priority partition, so chat cannot starve
-         | control work even in pathological cases
+         | A CPU budget ceiling for low-priority work, so chat
+         | cannot starve control work even in pathological cases.
+         | Still owed: Adaptive Partitioning is gone in QNX 8.0,
+         | and the measurements below show tier selection needs
+         | this to be bounded in order to be reliable.
 ```
 
 The important thing about this diagram is how little of it is ours. Steps
@@ -179,7 +181,14 @@ quietly dropped.
   which is noisy. Final numbers go on a Raspberry Pi if one is available,
   and will be reported as *measured*, never *guaranteed*.
 - **"Chat can never starve safety."** True for priority; not yet enforced
-  as a budget. Needs whichever budget mechanism replaces APS.
+  as a budget. Needs whichever budget mechanism replaces APS -- and the
+  interference measurements turned this from a nice-to-have into a
+  dependency, since tier selection can predict interference but cannot
+  put a ceiling on it.
+- **"It meets its deadlines."** Measured at 92-100% across runs on QEMU,
+  where the host itself steals CPU in deadline-sized quantities. The
+  mechanism is demonstrated; the number is not yet a result. Bare metal
+  and the FCFS baseline are what would make it one.
 
 ## Measuring on one CPU, on purpose
 
@@ -295,3 +304,95 @@ into a 16 ms budget, and then loses 3–10 ms to interference.
 Tier selection needs cost *plus* expected interference, as two tracked
 quantities rather than one. That is the substantive piece of week 2, and it
 is the real content of "deadline-aware" — not the tier table.
+
+## Tier selection with interference (15 Nov 2026)
+
+The 8 missed deadlines above had a structural cause, not an unlucky one, so
+this is the fix for it. The scheduler now predicts with two terms instead
+of one:
+
+```
+    predicted cost  =  clean cost  x  expected interference
+                       (est_us)       (infl_pct)
+```
+
+`est_us` stays what it was — a clean measurement of what a tier costs,
+fed only by unpreempted requests, which is the right answer to "what does
+this model cost" and the number the benchmark should report. `infl_pct` is
+new and carries the environment. They are kept apart deliberately:
+collapsing them into one figure would answer neither question.
+
+### Interference is per priority band
+
+`infl_pct` is tracked per band of 16 priorities, not globally, and the
+measurements show why that was not over-engineering:
+
+| band | interference | what lives there |
+|---|---|---|
+| prio 32–47 | **259–328%** | detection, priority 40 |
+| prio 0–15 | **149–184%** | chat, priority 10 |
+
+Detection suffers *proportionally* far more interference than chat, which
+is the opposite of what priority alone suggests and obvious in hindsight: a
+5 ms request that loses 10 ms is at 300%, while a 300 ms request that loses
+84 ms is at 128%. Interference as a ratio is scale-relative. A single
+global figure would have been dominated by whichever band had more traffic
+and been badly wrong for both.
+
+### A decaying maximum, not a mean
+
+The mean is the wrong statistic. A deadline is not met on average — it is
+met or missed per request, and what breaks it is a bad moment, not a
+typical one. Mean interference of 150% with spikes to 400% reproduces
+exactly the original failure: the model says it fits, and sometimes it does
+not.
+
+So the stored figure jumps immediately to any worse interference observed
+and decays by 63/64 per request in that band, floored at 100%. Quick to
+react to a busy machine, slow to forget — the right asymmetry when being
+wrong costs a missed deadline rather than a wasted millisecond. Step 5 of
+the smoke test exists to prove the decay actually happens: 40 requests
+after the flood stops, all deadlines met, no permanent pessimism.
+
+The ratio is computed self-relatively, `compute_us / (compute_us -
+stolen_us)`, so it needs no idea what the tier *should* have cost. That
+matters because on this target the clean cost estimate is itself unreliable
+— the interference model survives the cost model being wrong.
+
+### What it bought
+
+Detection now runs `small` under flood where it used to insist on
+`medium`, and the reply carries `est_used_us`, `infl_pct` and `prio_band`
+so each decision can be audited from the client — the same principle as
+reporting both priorities rather than asserting inheritance.
+
+Across three consecutive runs the smoke test went green, best run **183 of
+183 deadlines met (100%) while 3.76 seconds of CPU were stolen** across
+1061 preemptions. Earlier runs on the same code: 92%, 99%, 95%, 100%.
+
+That spread is the point of the next section.
+
+### What it did not buy, and cannot
+
+The deadline percentage on this host is not a measurement of Triage. Step 5
+runs the detection workload with nothing competing and still sees 24 of 40
+requests preempted and 165 ms stolen. The host takes CPU from the guest in
+quantities comparable to the 20 ms deadline, at random, invisibly.
+
+Two consequences, both already acted on:
+
+1. **The smoke test's step 4 is a regression tripwire at 90%, not a
+   claim.** Tuning that threshold until it passes would be fitting the test
+   to the host's mood. The claim is carried by step 3 instead, which
+   asserts priority inheritance on every single request and never flakes,
+   and will be carried by the FCFS comparison in `bench/`, which is
+   differential and so cancels the host term.
+2. **Interference can be predicted but not bounded.** When it spikes past
+   about 340%, nothing fits, `small` runs anyway, and the reply says
+   `degraded`. No amount of estimating fixes that, because the quantity
+   being estimated has no ceiling. A ceiling is a different mechanism —
+   which is precisely the budget enforcement owed since Adaptive
+   Partitioning turned out to be discontinued. The two pillars are not
+   independent after all: tier selection needs the budget to be bounded in
+   order to be reliable, and that is now an argument from measurement
+   rather than from the original plan.

@@ -18,6 +18,7 @@ static void show(const triage_stats_t *s)
 {
     triage_tier_t k;
     triage_task_t t;
+    unsigned      b;
     unsigned long long decided = s->deadlines_met + s->deadlines_missed;
 
     printf("requests        %llu\n", (unsigned long long)s->requests);
@@ -27,6 +28,7 @@ static void show(const triage_stats_t *s)
     printf("deadlines miss  %llu\n", (unsigned long long)s->deadlines_missed);
     printf("degraded        %llu\n", (unsigned long long)s->degraded);
     printf("preemptions     %llu\n", (unsigned long long)s->preemptions);
+    printf("stolen total    %lluus\n", (unsigned long long)s->stolen_us);
     printf("worst total     %lluus\n", (unsigned long long)s->worst_total_us);
     printf("worst queue     %lluus\n", (unsigned long long)s->worst_queue_us);
     printf("client prio     %d..%d\n", s->min_prio_seen, s->max_prio_seen);
@@ -43,13 +45,26 @@ static void show(const triage_stats_t *s)
                (unsigned long long)s->per_task[t]);
     printf("\n");
 
-    printf("cost model (measured, us)\n");
+    printf("cost model (clean cost, us)\n");
     for (t = 0; t < TRIAGE_TASK__COUNT; t++) {
         printf("  %-6s ", triage_task_name(t));
         for (k = TRIAGE_TIER_SMALL; k < TRIAGE_TIER__COUNT; k++)
             printf("%s=%llu ", triage_tier_name(k),
                    (unsigned long long)s->est_us[t][k]);
         printf("\n");
+    }
+
+    /* The other half of the prediction. Only bands that have seen traffic
+     * are worth printing -- the rest are still at their 100% seed and say
+     * nothing. A band reading well above 100% is the scheduler's reason
+     * for degrading requests at that priority. */
+    printf("interference (worst recent, %% of clean cost)\n");
+    for (b = 0; b < TRIAGE_PRIO_BANDS; b++) {
+        if (s->band_requests[b] == 0)
+            continue;
+        printf("  prio %3u-%-3u  %4u%%  (%llu requests)\n",
+               b * 16u, b * 16u + 15u, s->infl_pct[b],
+               (unsigned long long)s->band_requests[b]);
     }
 }
 

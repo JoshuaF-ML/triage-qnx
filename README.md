@@ -57,7 +57,7 @@ Hackathon, submission 14 Dec 2026).
 | `/dev/triage` resource manager, thread pool, devctl protocol | built |
 | Client library with priority + deadline | built |
 | Chunked compute with preemption accounting | built |
-| Deadline-driven tier selection with an adaptive cost model | built |
+| Deadline-driven tier selection, cost + interference model | built |
 | Text stats / counters | built |
 | Real inference backend (llama.cpp + small detector) | **stand-in load for now** |
 | Boots on QNX 8.0 under QEMU, smoke test green | verified 14 Nov |
@@ -145,20 +145,27 @@ First on-target run, QNX 8.0 x86_64 under QEMU, one CPU
 
 | | |
 |---|---|
-| Priority inherited | **100 / 100 requests**, at priority 40 and 12 |
-| Detection deadlines met under flood | 92% (8 misses of 100) |
-| Preemptions measured | 919, 814 ms of stolen CPU |
+| Priority inherited | **100% of requests**, at priority 40 and at 12 |
+| Deadlines met, best run | **183 / 183 (100%)** |
+| Deadlines met, across runs | 92%, 95%, 99%, 100% |
+| CPU stolen by interference | up to 3.76 s over 1061 preemptions |
 
-The 92% is a real number on a noisy host, and it is reported instead of the
-100% an earlier version of the engine produced, because that 100% was an
-artifact — the engine burned wall-clock time rather than doing work, so a
-preempted request quietly did less and still finished "on time".
+Two things about those numbers, because they are easy to overstate.
 
-Two things follow, both written up in
-[`docs/architecture.md`](docs/architecture.md): the final benchmark has to
-run on bare metal, because this host steals CPU from the guest in amounts
-comparable to the deadline; and tier selection needs to model interference
-as well as cost, which is what causes the 8 misses.
+The spread is the host, not Triage. QEMU on a Windows laptop deschedules
+the guest at random: with *nothing competing*, 24 of 40 requests still lose
+CPU. That theft is invisible to QNX and comparable in size to the 20 ms
+deadline, so the smoke test's flood step is a regression tripwire rather
+than a claim, and the real comparison is the FCFS baseline on bare metal.
+Priority inheritance is the part that is claimed outright, because it is
+asserted on every single request and has never once failed.
+
+An earlier version of the engine reported a clean 100% and it was an
+artifact: it burned wall-clock time instead of doing work, so a preempted
+request quietly did less and still finished "on time". Fixing that dropped
+the figure to 92%; modelling interference in tier selection brought it back
+up honestly. [`docs/architecture.md`](docs/architecture.md) has both
+post-mortems.
 
 To drive it by hand:
 

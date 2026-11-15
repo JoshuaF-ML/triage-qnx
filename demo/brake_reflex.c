@@ -33,6 +33,7 @@ static void usage(const char *a0)
     fprintf(stderr,
             "usage: %s [-P prio] [-d deadline_us] [-p period_us] [-n count] [-q]\n"
             "  -P prio         priority to run at (default 40)\n"
+            "  -m pct          minimum %% of deadlines met to exit 0 (default 100)\n"
             "  -d deadline_us  deadline per request (default 20000 = 20ms)\n"
             "  -p period_us    how often to ask (default 50000 = 50ms)\n"
             "  -n count        number of requests (default 200, 0 = forever)\n"
@@ -43,6 +44,11 @@ static void usage(const char *a0)
 int main(int argc, char **argv)
 {
     int      prio = 40, quiet = 0, c, fd;
+    /* Minimum percentage of deadlines that must be met for this program to
+     * exit 0. Defaults to 100, because that is the claim; a caller that
+     * knows its platform steals CPU can lower it deliberately and visibly
+     * rather than having a weaker default hidden in here. */
+    long     min_met_pct = 100;
     uint32_t deadline_us = 20000;
     uint64_t period_us = 50000;
     long     count = 200, i;
@@ -57,9 +63,10 @@ int main(int argc, char **argv)
     unsigned preempted_reqs = 0;
     uint64_t stolen_total_us = 0;
 
-    while ((c = getopt(argc, argv, "P:d:p:n:qh")) != -1) {
+    while ((c = getopt(argc, argv, "P:d:p:n:m:qh")) != -1) {
         switch (c) {
         case 'P': prio = atoi(optarg); break;
+        case 'm': min_met_pct = strtol(optarg, NULL, 10); break;
         case 'd': deadline_us = (uint32_t)strtoul(optarg, NULL, 10); break;
         case 'p': period_us = strtoull(optarg, NULL, 10); break;
         case 'n': count = strtol(optarg, NULL, 10); break;
@@ -157,5 +164,13 @@ int main(int argc, char **argv)
                prio_mismatch, prio_checked);
 
     triage_close(fd);
-    return (missed || prio_mismatch) ? 1 : 0;
+
+    /* Priority inheritance is pass/fail -- it either happened on every
+     * request or the project's central claim is false. Deadlines are a
+     * percentage, because the platform gets a vote. */
+    if (prio_mismatch)
+        return 1;
+    if (met + missed == 0)
+        return errors ? 1 : 0;
+    return (100u * met / (met + missed) < (unsigned long)min_met_pct) ? 1 : 0;
 }

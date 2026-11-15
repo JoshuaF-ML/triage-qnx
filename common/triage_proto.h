@@ -18,7 +18,31 @@
 #include <stdint.h>
 
 #define TRIAGE_DEV_PATH     "/dev/triage"
-#define TRIAGE_ABI_VERSION  1u
+
+/* 2: tier selection now models interference as well as cost, and the
+ *    reply and stats carry the figures the decision was made on. */
+#define TRIAGE_ABI_VERSION  2u
+
+/* ------------------------------------------------------------------ */
+/* Priority bands                                                      */
+/*                                                                     */
+/* Interference -- CPU lost to more urgent work -- is tracked per band  */
+/* rather than globally, because how much of it a request suffers       */
+/* depends almost entirely on its own priority. A priority-40 detection */
+/* is interrupted by almost nothing; a priority-10 chat request is      */
+/* interrupted by everything, every detection included. One global      */
+/* figure would make detection absurdly pessimistic and chat absurdly   */
+/* optimistic at the same time.                                         */
+/*                                                                     */
+/* Bands of 16 over QNX's 0..255 priorities: coarse enough that each    */
+/* band sees enough traffic to learn from, fine enough to separate the  */
+/* priorities a real system actually uses.                              */
+/* ------------------------------------------------------------------ */
+#define TRIAGE_PRIO_BANDS   16
+#define TRIAGE_PRIO_BAND(p) \
+    ((unsigned)((p) < 0 ? 0u \
+                 : (((unsigned)(p) >> 4) >= TRIAGE_PRIO_BANDS \
+                        ? TRIAGE_PRIO_BANDS - 1u : ((unsigned)(p) >> 4))))
 
 /* ------------------------------------------------------------------ */
 /* Model tiers                                                         */
@@ -94,6 +118,19 @@ typedef struct {
     int32_t  client_prio;
     int32_t  server_prio;
 
+    /* The tier decision, made auditable.
+     *
+     * Same principle as the two priorities above: a client should be able
+     * to check the reasoning rather than take the tier on faith.
+     * est_used_us is what we predicted this tier would cost, interference
+     * included; infl_pct is the inflation applied for interference, where
+     * 100 means none expected; prio_band says whose interference history
+     * the prediction came from. If est_used_us is routinely far from
+     * compute_us, the model is wrong, and this is where that shows. */
+    uint32_t est_used_us;
+    uint32_t infl_pct;
+    uint32_t prio_band;
+
     uint32_t confidence;     /* 0..1000, scaled; higher tier -> higher  */
     uint32_t result_len;
     char     result[TRIAGE_PAYLOAD_MAX];
@@ -122,9 +159,17 @@ typedef struct {
     uint64_t per_task[TRIAGE_TASK__COUNT];
     uint64_t worst_total_us;
     uint64_t worst_queue_us;
-    /* Adaptive cost model: what a tier currently costs, in us.
-     * Indexed [task][tier]. Updated by an EWMA as work completes. */
+    uint64_t stolen_us;      /* total CPU lost to interference, all reqs */
+    /* Adaptive cost model: what a tier currently costs when it runs
+     * CLEAN, in us. Indexed [task][tier]. Updated by an EWMA as work
+     * completes, from unpreempted requests only. */
     uint64_t est_us[TRIAGE_TASK__COUNT][TRIAGE_TIER__COUNT];
+    /* The other half of the prediction: how much longer than its clean
+     * cost a request in this priority band currently takes, in percent.
+     * 100 == no interference expected. A decaying maximum, not a mean --
+     * see sched.c for why a deadline wants the bad case. */
+    uint32_t infl_pct[TRIAGE_PRIO_BANDS];
+    uint64_t band_requests[TRIAGE_PRIO_BANDS];
     int32_t  min_prio_seen;
     int32_t  max_prio_seen;
 } triage_stats_t;

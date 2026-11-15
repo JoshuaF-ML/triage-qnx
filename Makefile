@@ -16,8 +16,16 @@ VARIANT := gcc_nto$(ARCH)
 
 CC      := qcc
 WERROR  ?= -Werror
+
+# -MMD -MP generates a .d file per object listing the headers it included,
+# which is then included back below. Without it, make has no idea that
+# anything depends on common/triage_proto.h, and editing the protocol
+# leaves stale objects linked against the old struct layout and the old
+# devctl command codes. That is not a theoretical hazard: it happened, and
+# it presents as every client getting ENOTTY from a server built from the
+# same tree, which is a thoroughly misleading symptom to debug.
 CFLAGS  := -V$(VARIANT) -Wall -Wextra $(WERROR) -O2 -g -std=gnu11 \
-           -Icommon -Iclient -Iserver
+           -MMD -MP -Icommon -Iclient -Iserver
 LDFLAGS := -V$(VARIANT)
 
 BUILD   := build/$(ARCH)
@@ -83,3 +91,8 @@ info:
 
 clean:
 	rm -rf build stage
+
+# Header dependencies discovered by the compiler on the previous build.
+# The leading - is because they do not exist on a clean tree.
+-include $(SERVER_OBJ:.o=.d) $(CLIENT_OBJ:.o=.d) \
+         $(addprefix $(BUILD)/demo/,$(DEMOS:=.d))
