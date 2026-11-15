@@ -55,7 +55,7 @@
 #include <sys/neutrino.h>
 
 #include "engine.h"
-#include "sched.h"
+#include "tier_sched.h"
 #include "triage_proto.h"
 
 static resmgr_connect_funcs_t connect_funcs;

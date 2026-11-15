@@ -64,7 +64,7 @@ Hackathon, submission 14 Dec 2026).
 | Priority inheritance verified on target | 100/100 requests, asserted in code |
 | First-come-first-served baseline server for comparison | built, measured |
 | Car sim + web dashboard | planned, week 3 |
-| CPU budget protection | redesigned — see below |
+| CPU budget protection | mechanism **verified** (SCHED_SPORADIC, kernel-enforced); wiring not done |
 | Benchmark numbers on hardware | QEMU done — see [benchmark.md](docs/benchmark.md); bare metal still owed |
 
 The compute engine currently burns a calibrated number of microseconds per
@@ -238,6 +238,14 @@ written on Linux — the mechanism it is built on does not exist there.
 | **CPU budget enforcement** | planned — see note below | A ceiling on low-priority AI, so chat can never starve control loops even in pathological cases. |
 | **Fixed-priority channel** | `ChannelCreate(_NTO_CHF_FIXED_PRIORITY ...)` in [`bench/fcfs.c`](bench/fcfs.c) `main()` | The baseline, built by setting the one flag Triage omits. It is how the benchmark isolates inheritance as a single variable. |
 | **Deferred reply** | `_RESMGR_NOREPLY` in `io_devctl()` and `MsgReply()` in `worker()`, [`bench/fcfs.c`](bench/fcfs.c) | Lets the baseline implement a real FCFS queue: receive now, reply later from another thread, in arrival order. QNX would otherwise deliver the highest-priority message first. |
+
+> **Update, 16 Nov:** the replacement is settled. `SCHED_SPORADIC` is
+> verified working and kernel-**enforced** on QNX 8.0 by
+> [`bench/sched_probe.c`](bench/sched_probe.c) — a sporadic thread with a
+> 2 ms/10 ms budget got 16.5% of the CPU where an unenforced one would have
+> taken ~100%. That is a stronger ceiling than the token-bucket fallback,
+> because the kernel can take the CPU away from work already running.
+> Wiring it into the request path is the remaining step.
 
 > **Note on Adaptive Partitioning.** The original design used QNX Adaptive
 > Partitioning for this. It cannot: **APS was discontinued in QNX SDP 8.0**

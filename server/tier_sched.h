@@ -1,5 +1,13 @@
 /*
- * sched.h -- deadline-aware tier selection and statistics.
+ * tier_sched.h -- deadline-aware tier selection and statistics.
+ *
+ * NOT named sched.h, and that matters. This directory is on the include
+ * path, so a header called sched.h here shadows the system <sched.h> for
+ * every translation unit that gets -Iserver -- which silently removes
+ * SCHED_RR, SCHED_SPORADIC and the sporadic fields of struct sched_param.
+ * The errors that produces name the missing struct member, not the
+ * shadowed header, so they send you hunting for a feature macro that was
+ * never the problem. It cost an afternoon. Do not rename this back.
  *
  * This is the part of Triage that is not just "a priority queue". QNX
  * already gives us priority: the resource manager's receive thread runs
@@ -9,8 +17,8 @@
  * estimate of what each tier currently costs, pick the largest tier that
  * still fits, and say so in the reply.
  */
-#ifndef TRIAGE_SCHED_H_
-#define TRIAGE_SCHED_H_
+#ifndef TRIAGE_TIER_SCHED_H_
+#define TRIAGE_TIER_SCHED_H_
 
 #include <stdint.h>
 #include "triage_proto.h"
@@ -59,4 +67,4 @@ uint64_t sched_estimate_us(triage_task_t task, triage_tier_t tier);
  * 100 == no interference expected. */
 uint32_t sched_inflation_pct(int32_t client_prio);
 
-#endif /* TRIAGE_SCHED_H_ */
+#endif /* TRIAGE_TIER_SCHED_H_ */

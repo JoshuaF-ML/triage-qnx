@@ -24,14 +24,19 @@ WERROR  ?= -Werror
 # devctl command codes. That is not a theoretical hazard: it happened, and
 # it presents as every client getting ENOTTY from a server built from the
 # same tree, which is a thoroughly misleading symptom to debug.
+# -D_QNX_SOURCE turns on QNX's own extensions, which this project uses
+# deliberately rather than incidentally. Without it the headers hide
+# SCHED_SPORADIC, SCHED_RR and the sporadic fields of struct sched_param
+# behind __EXT_QNX, and the errors you get name the struct member rather
+# than the feature macro, which sends you looking in the wrong place.
 CFLAGS  := -V$(VARIANT) -Wall -Wextra $(WERROR) -O2 -g -std=gnu11 \
-           -MMD -MP -Icommon -Iclient -Iserver
+           -D_QNX_SOURCE -MMD -MP -Icommon -Iclient -Iserver
 LDFLAGS := -V$(VARIANT)
 
 BUILD   := build/$(ARCH)
 STAGE   := stage/$(ARCH)
 
-SERVER_SRC := server/main.c server/engine.c server/sched.c
+SERVER_SRC := server/main.c server/engine.c server/tier_sched.c
 SERVER_OBJ := $(SERVER_SRC:%.c=$(BUILD)/%.o)
 
 # The client library is small enough to link into each demo directly.
@@ -46,10 +51,10 @@ DEMO_BIN := $(addprefix $(BUILD)/,$(DEMOS))
 # servers burned CPU differently, no comparison between them would mean
 # anything. It does NOT link sched.c -- having no tier selection or
 # interference model is the whole point of it.
-BENCH_SRC := bench/fcfs.c
+BENCH_SRC := bench/fcfs.c bench/sched_probe.c
 BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
 
-BINS := $(BUILD)/triage $(BUILD)/fcfs $(DEMO_BIN)
+BINS := $(BUILD)/triage $(BUILD)/fcfs $(BUILD)/sched_probe $(DEMO_BIN)
 
 .PHONY: all clean stage info
 .SUFFIXES:
@@ -60,7 +65,12 @@ $(BUILD)/triage: $(SERVER_OBJ)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^
 
-$(BUILD)/fcfs: $(BENCH_OBJ) $(BUILD)/server/engine.o
+$(BUILD)/fcfs: $(BUILD)/bench/fcfs.o $(BUILD)/server/engine.o
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+# Standalone: it asks the kernel a question and links nothing of ours.
+$(BUILD)/sched_probe: $(BUILD)/bench/sched_probe.o
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^
 

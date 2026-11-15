@@ -399,3 +399,60 @@ Two consequences, both already acted on:
    independent after all: tier selection needs the budget to be bounded in
    order to be reliable, and that is now an argument from measurement
    rather than from the original plan.
+
+
+## SCHED_SPORADIC is real on QNX 8.0 (16 Nov 2026)
+
+APS being discontinued left pillar 4 without a mechanism, and the fallback
+list had sporadic scheduling as "to be verified, not assumed". **It is now
+verified** -- by asking the kernel rather than reading a header. The probe
+is [`bench/sched_probe.c`](../bench/sched_probe.c).
+
+Header evidence was worthless on its own: `SCHED_SPORADIC` is declared in
+this SDP's `<sched.h>`, and so is `SCHED_EXT_APS`, for a scheduler that no
+longer exists. So the probe asks three questions and only the third counts
+-- is the budget actually **enforced**?
+
+A sporadic thread at priority 40 with a 2 ms budget per 10 ms period,
+dropping to priority 5, against a plain spinner at priority 10, one CPU:
+
+| | |
+|---|---|
+| policy accepted | yes |
+| policy reported back | yes (`policy=4`) |
+| **CPU the sporadic thread actually got** | **16.5%** |
+| expected if enforced | ~20% |
+| expected if ignored | ~100% (priority 40 beats 10) |
+
+Those two outcomes differ by a factor of five, so there is no boundary to
+argue about. The kernel enforces it.
+
+This matters more than convenience. A ceiling enforced by the microkernel
+is a much stronger claim than a token bucket in `tier_sched.c` debited at
+chunk boundaries, which was the guaranteed fallback: our own accounting can
+only throttle work we have not started yet, whereas the kernel can take the
+CPU away from work already running. The benchmark showed why a ceiling is
+needed rather than merely nice -- tier selection can *predict* interference
+but cannot *bound* it, so past roughly 340% nothing fits and Triage
+degrades with no floor under it.
+
+So the plan is: low-priority requests get switched to SCHED_SPORADIC for
+the duration of their work, giving chat inference a hard CPU ceiling
+enforced by the kernel while priority inheritance still decides who goes
+first. Written up here because the verification is done and the wiring is
+not.
+
+### A header named sched.h was hiding all of this
+
+Worth recording, because the failure mode is thoroughly misleading.
+`server/sched.h` held the tier selector, `server/` is on the include path,
+and so `#include <sched.h>` resolved to *our* header in every file compiled
+with `-Iserver`. That silently removed `SCHED_RR`, `SCHED_SPORADIC` and the
+sporadic fields of `struct sched_param`.
+
+The compiler complains about the missing struct member, not the shadowed
+header, so it reads like a feature-macro problem and sends you hunting in
+the wrong place. It is also why the baseline server quietly stopped setting
+`SCHED_RR` earlier. The file is now `server/tier_sched.h`, carrying a
+comment saying why it must not be renamed back, and `-D_QNX_SOURCE` is set,
+which these QNX extensions genuinely do require.
