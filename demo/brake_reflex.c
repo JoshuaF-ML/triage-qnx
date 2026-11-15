@@ -49,6 +49,14 @@ int main(int argc, char **argv)
      * knows its platform steals CPU can lower it deliberately and visibly
      * rather than having a weaker default hidden in here. */
     long     min_met_pct = 100;
+    /* Which device to ask. The point of -D is that the SAME client, with
+     * the same code path, can be pointed at Triage or at the FCFS
+     * baseline -- so a difference in the numbers cannot be the client. */
+    const char *dev = NULL;
+    /* Against the baseline, priority NOT being inherited is the expected
+     * result rather than a failure, so -b stops that from being an error.
+     * It never silences the report, only the exit code. */
+    int      baseline = 0;
     uint32_t deadline_us = 20000;
     uint64_t period_us = 50000;
     long     count = 200, i;
@@ -63,10 +71,12 @@ int main(int argc, char **argv)
     unsigned preempted_reqs = 0;
     uint64_t stolen_total_us = 0;
 
-    while ((c = getopt(argc, argv, "P:d:p:n:m:qh")) != -1) {
+    while ((c = getopt(argc, argv, "P:d:p:n:m:D:bqh")) != -1) {
         switch (c) {
         case 'P': prio = atoi(optarg); break;
         case 'm': min_met_pct = strtol(optarg, NULL, 10); break;
+        case 'D': dev = optarg; break;
+        case 'b': baseline = 1; break;
         case 'd': deadline_us = (uint32_t)strtoul(optarg, NULL, 10); break;
         case 'p': period_us = strtoull(optarg, NULL, 10); break;
         case 'n': count = strtol(optarg, NULL, 10); break;
@@ -85,13 +95,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if ((fd = triage_open(NULL)) < 0) {
+    if ((fd = triage_open(dev)) < 0) {
         fprintf(stderr, "brake_reflex: open %s: %s\n",
-                TRIAGE_DEV_PATH, strerror(errno));
+                dev ? dev : TRIAGE_DEV_PATH, strerror(errno));
         return 1;
     }
 
-    printf("brake_reflex: prio=%d deadline=%uus period=%lluus\n",
+    printf("brake_reflex: dev=%s prio=%d deadline=%uus period=%lluus\n",
+           dev ? dev : TRIAGE_DEV_PATH,
            triage_get_priority(), deadline_us,
            (unsigned long long)period_us);
 
@@ -110,8 +121,9 @@ int main(int argc, char **argv)
         prio_checked++;
         if (rep.client_prio != rep.server_prio) {
             prio_mismatch++;
-            printf("  [%4ld] PRIORITY NOT INHERITED: client=%d server=%d\n",
-                   i, rep.client_prio, rep.server_prio);
+            if (!quiet && !baseline)
+                printf("  [%4ld] PRIORITY NOT INHERITED: client=%d server=%d\n",
+                       i, rep.client_prio, rep.server_prio);
         }
         if (rep.preempted) {
             preempted_reqs++;
@@ -159,16 +171,18 @@ int main(int argc, char **argv)
            preempted_reqs, (unsigned long long)stolen_total_us,
            prio_checked, prio_mismatch);
 
-    if (prio_mismatch)
+    if (prio_mismatch && !baseline)
         printf("  FAIL priority was not inherited on %u of %u requests\n",
                prio_mismatch, prio_checked);
+    else if (prio_mismatch)
+        printf("  (expected: this server does not inherit priority)\n");
 
     triage_close(fd);
 
     /* Priority inheritance is pass/fail -- it either happened on every
      * request or the project's central claim is false. Deadlines are a
      * percentage, because the platform gets a vote. */
-    if (prio_mismatch)
+    if (prio_mismatch && !baseline)
         return 1;
     if (met + missed == 0)
         return errors ? 1 : 0;

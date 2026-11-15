@@ -71,28 +71,33 @@ static void show(const triage_stats_t *s)
 static void usage(const char *a0)
 {
     fprintf(stderr,
-            "usage: %s [-w seconds] [-r]\n"
+            "usage: %s [-w seconds] [-r] [-D path]\n"
             "  -w seconds  repeat every N seconds\n"
-            "  -r          reset the counters and exit\n",
-            a0);
+            "  -r          reset the counters and exit\n"
+            "  -D path     device to query (default %s). The FCFS baseline\n"
+            "              in bench/ serves the same stats command, so this\n"
+            "              works unchanged against either server.\n",
+            a0, TRIAGE_DEV_PATH);
 }
 
 int main(int argc, char **argv)
 {
     int fd, c, watch = 0, reset = 0;
+    const char *dev = NULL;
 
-    while ((c = getopt(argc, argv, "w:rh")) != -1) {
+    while ((c = getopt(argc, argv, "w:rD:h")) != -1) {
         switch (c) {
         case 'w': watch = atoi(optarg); break;
         case 'r': reset = 1; break;
+        case 'D': dev = optarg; break;
         case 'h': usage(argv[0]); return 0;
         default:  usage(argv[0]); return 1;
         }
     }
 
-    if ((fd = triage_open(NULL)) < 0) {
+    if ((fd = triage_open(dev)) < 0) {
         fprintf(stderr, "triage_stat: open %s: %s\n",
-                TRIAGE_DEV_PATH, strerror(errno));
+                dev ? dev : TRIAGE_DEV_PATH, strerror(errno));
         return 1;
     }
 

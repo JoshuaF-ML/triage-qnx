@@ -39,6 +39,22 @@ void     engine_burn_us(uint64_t us);
  * Exposed for the startup banner, so a nonsense calibration is visible. */
 uint64_t engine_work_per_us(void);
 
+/*
+ * Override the measured calibration with an explicit figure.
+ *
+ * This exists for the benchmark, and it is not a convenience -- without it
+ * the comparison against bench/fcfs.c is not controlled. Each server
+ * process calibrates itself at startup, and calibration on this target
+ * varies by over 2x. Two servers started minutes apart therefore do
+ * DIFFERENT amounts of arithmetic for the same nominal tier cost, so a
+ * difference in their deadline hit rates might be nothing but a difference
+ * in how much work each decided a millisecond was worth.
+ *
+ * bench/run.sh measures once and passes the same value to every server, so
+ * that a "12 ms tier" is literally the same arithmetic on both sides.
+ */
+void engine_set_work_per_us(uint64_t units_per_us);
+
 /* What the last calibration round measured for a burn that should have
  * taken 2000us. Far from 2000 means every timing here is scaled wrong. */
 uint64_t engine_calib_check_us(void);

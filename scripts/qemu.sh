@@ -7,6 +7,7 @@
 #   ./scripts/qemu.sh ssh       # shell into the target
 #   ./scripts/qemu.sh push      # copy built binaries to /data on target
 #   ./scripts/qemu.sh smoke     # push, then run the smoke test on target
+#   ./scripts/qemu.sh bench     # push, then run the Triage-vs-FCFS bench
 #   ./scripts/qemu.sh console   # tail the target's serial console
 #   ./scripts/qemu.sh stop
 #
@@ -153,16 +154,26 @@ push)
     [ -d "$STAGE" ] || { echo "error: $STAGE missing -- run 'make stage' first" >&2; exit 1; }
     # shellcheck disable=SC2086
     scp $SSH_OPTS -P "$SSH_PORT" \
-        "$STAGE/triage" "$STAGE/brake_reflex" "$STAGE/chat_load" \
-        "$STAGE/triage_stat" "$REPO/scripts/smoke.sh" \
+        "$STAGE/triage" "$STAGE/fcfs" "$STAGE/brake_reflex" \
+        "$STAGE/chat_load" "$STAGE/triage_stat" \
+        "$REPO/scripts/smoke.sh" "$REPO/bench/run.sh" \
         "$TARGET_USER@localhost:/data/"
-    ssh_target "chmod +x /data/triage /data/brake_reflex /data/chat_load /data/triage_stat /data/smoke.sh"
+    ssh_target "chmod +x /data/triage /data/fcfs /data/brake_reflex \
+                         /data/chat_load /data/triage_stat \
+                         /data/smoke.sh /data/run.sh"
     echo "pushed to /data"
     ;;
 
 smoke)
     "$0" push
     ssh_target "cd /data && ./smoke.sh"
+    ;;
+
+bench)
+    shift || true
+    "$0" push
+    # shellcheck disable=SC2086,SC2048
+    ssh_target "cd /data && ./run.sh $*"
     ;;
 
 stop)
@@ -177,7 +188,7 @@ stop)
     ;;
 
 *)
-    echo "usage: $0 {build|run|console|ssh|push|smoke|stop}" >&2
+    echo "usage: $0 {build|run|console|ssh|push|smoke|bench|stop}" >&2
     exit 1
     ;;
 esac

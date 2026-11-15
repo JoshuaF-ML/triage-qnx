@@ -310,11 +310,16 @@ static void on_signal(int sig)
 static void usage(const char *argv0)
 {
     fprintf(stderr,
-            "usage: %s [-p path] [-v] [-i] [-t threads]\n"
+            "usage: %s [-p path] [-v] [-i] [-t threads] [-W units]\n"
             "  -p path     device path to register (default %s)\n"
             "  -v          log every request to stderr\n"
             "  -i          print the tier cost model and exit\n"
-            "  -t threads  max pool threads (default 16)\n",
+            "  -t threads  max pool threads (default 16)\n"
+            "  -W units    work units per microsecond, overriding the\n"
+            "              startup calibration. The benchmark passes the\n"
+            "              same value to every server so that both sides\n"
+            "              do identical arithmetic per tier -- see\n"
+            "              engine_set_work_per_us().\n",
             argv0, TRIAGE_DEV_PATH);
 }
 
@@ -331,9 +336,10 @@ int main(int argc, char **argv)
     engine_init();
     sched_init();
 
-    while ((c = getopt(argc, argv, "p:vit:h")) != -1) {
+    while ((c = getopt(argc, argv, "p:vit:W:h")) != -1) {
         switch (c) {
         case 'p': path = optarg; break;
+        case 'W': engine_set_work_per_us(strtoull(optarg, NULL, 10)); break;
         case 'v': verbose = 1; break;
         case 'i': dump_tiers(); return 0;
         case 't': max_threads = atoi(optarg); break;

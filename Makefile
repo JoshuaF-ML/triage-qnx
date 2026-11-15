@@ -42,7 +42,14 @@ CLIENT_OBJ := $(CLIENT_SRC:%.c=$(BUILD)/%.o)
 DEMOS    := brake_reflex chat_load triage_stat
 DEMO_BIN := $(addprefix $(BUILD)/,$(DEMOS))
 
-BINS := $(BUILD)/triage $(DEMO_BIN)
+# The FCFS baseline. It shares engine.c with Triage on purpose: if the two
+# servers burned CPU differently, no comparison between them would mean
+# anything. It does NOT link sched.c -- having no tier selection or
+# interference model is the whole point of it.
+BENCH_SRC := bench/fcfs.c
+BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
+
+BINS := $(BUILD)/triage $(BUILD)/fcfs $(DEMO_BIN)
 
 .PHONY: all clean stage info
 .SUFFIXES:
@@ -50,6 +57,10 @@ BINS := $(BUILD)/triage $(DEMO_BIN)
 all: $(BINS)
 
 $(BUILD)/triage: $(SERVER_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+$(BUILD)/fcfs: $(BENCH_OBJ) $(BUILD)/server/engine.o
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^
 
@@ -73,8 +84,8 @@ $(BUILD)/%.o: %.c
 stage: all
 	@mkdir -p $(STAGE)
 	cp $(BINS) $(STAGE)/
-	cp scripts/smoke.sh $(STAGE)/
-	chmod +x $(STAGE)/smoke.sh
+	cp scripts/smoke.sh bench/run.sh $(STAGE)/
+	chmod +x $(STAGE)/smoke.sh $(STAGE)/run.sh
 	@echo "staged in $(STAGE):"
 	@ls -1 $(STAGE)
 
@@ -94,5 +105,5 @@ clean:
 
 # Header dependencies discovered by the compiler on the previous build.
 # The leading - is because they do not exist on a clean tree.
--include $(SERVER_OBJ:.o=.d) $(CLIENT_OBJ:.o=.d) \
+-include $(SERVER_OBJ:.o=.d) $(CLIENT_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) \
          $(addprefix $(BUILD)/demo/,$(DEMOS:=.d))

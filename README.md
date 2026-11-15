@@ -62,10 +62,10 @@ Hackathon, submission 14 Dec 2026).
 | Real inference backend (llama.cpp + small detector) | **stand-in load for now** |
 | Boots on QNX 8.0 under QEMU, smoke test green | verified 14 Nov |
 | Priority inheritance verified on target | 100/100 requests, asserted in code |
-| First-come-first-served baseline server for comparison | planned, week 2 |
+| First-come-first-served baseline server for comparison | built, measured |
 | Car sim + web dashboard | planned, week 3 |
 | CPU budget protection | redesigned — see below |
-| Benchmark numbers on hardware | planned, week 4 — **must be bare metal**, see below |
+| Benchmark numbers on hardware | QEMU done — see [benchmark.md](docs/benchmark.md); bare metal still owed |
 
 The compute engine currently burns a calibrated number of microseconds per
 chunk instead of running a real model. This is honest scaffolding, not a
@@ -156,9 +156,8 @@ The spread is the host, not Triage. QEMU on a Windows laptop deschedules
 the guest at random: with *nothing competing*, 24 of 40 requests still lose
 CPU. That theft is invisible to QNX and comparable in size to the 20 ms
 deadline, so the smoke test's flood step is a regression tripwire rather
-than a claim, and the real comparison is the FCFS baseline on bare metal.
-Priority inheritance is the part that is claimed outright, because it is
-asserted on every single request and has never once failed.
+than a claim. Priority inheritance is the part that is claimed outright,
+because it is asserted on every single request and has never once failed.
 
 An earlier version of the engine reported a clean 100% and it was an
 artifact: it burned wall-clock time instead of doing work, so a preempted
@@ -179,6 +178,50 @@ To drive it by hand:
 Raising a thread's priority needs the `PROCMGR_AID_PRIORITY` ability, so
 run the demos as root on a stock image.
 
+## Does it actually beat a normal inference server?
+
+Yes, and by how much is measured rather than asserted:
+[`docs/benchmark.md`](docs/benchmark.md).
+
+[`bench/fcfs.c`](bench/fcfs.c) is a first-come-first-served baseline built
+to be the strongest *honest* version of the conventional approach — same
+engine, same transport, same protocol, same thread pool, same clients, same
+boot. The differences are deliberate and enumerated; the headline one is
+that its channel is created **with** `_NTO_CHF_FIXED_PRIORITY`, the single
+flag Triage omits, so its threads run at the server's priority instead of
+the caller's.
+
+100 detection requests, priority 40, 20 ms deadline, under a four-thread
+chat flood, as load intensity rises:
+
+| deadline hit rate | load 300 | load 500 | load 800 |
+|---|---|---|---|
+| **Triage** | **100%** | **99%** | **97%** |
+| same pool + tier, no inheritance | 93% | 71% | 23% |
+| FCFS queue, Triage's own tiers | 73% | 82% | 88% |
+| FCFS queue, medium tier | 22% | 36% | 0% |
+
+And the number that matters more than the average — worst case against a
+20 ms deadline:
+
+| | load 300 | load 500 | load 800 |
+|---|---|---|---|
+| **Triage** | **17.6 ms** | **20.1 ms** | **22.0 ms** |
+| FCFS queue, Triage's own tiers | 859 ms | 1094 ms | **1752 ms** |
+
+Three readings. The baseline's hit rate tracks how much spare CPU happens
+to be lying around — 93% down to 23% on identical code — while Triage's
+barely moves, because it is not relying on headroom.
+First-come-first-served has a tail 16–88× over the deadline that no tuning
+removes, since a detection request queued behind several 300 ms chat
+requests waits for all of them. And the win is not "Triage runs a smaller
+model": it still wins when the baseline is handed Triage's own tier
+choices.
+
+The benchmark doc also records the three ways an earlier version of this
+comparison was wrong — including a baseline that was accidentally
+inheriting priority and therefore "beat" Triage.
+
 ## Evidence of QNX use
 
 Triage is not a portable program with a QNX build target. It cannot be
@@ -193,6 +236,8 @@ written on Linux — the mechanism it is built on does not exist there.
 | **Thread pool** | `thread_pool_create()` in `main()` | Inheritance only buys anything if an urgent message can be received while a lazy request is still computing. |
 | **Cycle-accurate timing** | `ClockCycles()` and `SYSPAGE_ENTRY(qtime)->cycles_per_sec` in [`server/engine.c`](server/engine.c) | Microsecond measurement without syscall overhead in the measurement path. |
 | **CPU budget enforcement** | planned — see note below | A ceiling on low-priority AI, so chat can never starve control loops even in pathological cases. |
+| **Fixed-priority channel** | `ChannelCreate(_NTO_CHF_FIXED_PRIORITY ...)` in [`bench/fcfs.c`](bench/fcfs.c) `main()` | The baseline, built by setting the one flag Triage omits. It is how the benchmark isolates inheritance as a single variable. |
+| **Deferred reply** | `_RESMGR_NOREPLY` in `io_devctl()` and `MsgReply()` in `worker()`, [`bench/fcfs.c`](bench/fcfs.c) | Lets the baseline implement a real FCFS queue: receive now, reply later from another thread, in arrival order. QNX would otherwise deliver the highest-priority message first. |
 
 > **Note on Adaptive Partitioning.** The original design used QNX Adaptive
 > Partitioning for this. It cannot: **APS was discontinued in QNX SDP 8.0**
@@ -213,7 +258,7 @@ common/     wire protocol shared by client and server
 server/     the resource manager, the chunked engine, the tier scheduler
 client/     the client library: three functions, one header
 demo/       urgent client, greedy client, counters
-bench/      baseline server and benchmark scripts   (week 2)
+bench/      FCFS baseline server and benchmark harness
 dashboard/  live web UI                             (week 3)
 docs/       architecture notes and the codelab
 scripts/    QEMU image build, on-target smoke test

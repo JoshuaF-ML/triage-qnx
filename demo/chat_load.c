@@ -24,6 +24,7 @@ static int      n_threads   = 4;
 static int      prio        = 10;
 static uint32_t deadline_us = 2000000;   /* 2 s: we are not in a hurry */
 static int      run_seconds = 30;
+static const char *dev;          /* NULL == TRIAGE_DEV_PATH */
 static volatile int stop;
 
 static unsigned long long total_requests;
@@ -44,6 +45,7 @@ static void *worker(void *arg)
     long id = (long)arg;
     int  fd;
     unsigned long long n = 0, met = 0;
+    unsigned errs = 0;
 
     if (triage_set_priority(prio) != 0) {
         fprintf(stderr, "chat_load[%ld]: set priority: %s\n",
@@ -51,9 +53,9 @@ static void *worker(void *arg)
         return NULL;
     }
 
-    if ((fd = triage_open(NULL)) < 0) {
+    if ((fd = triage_open(dev)) < 0) {
         fprintf(stderr, "chat_load[%ld]: open %s: %s\n",
-                id, TRIAGE_DEV_PATH, strerror(errno));
+                id, dev ? dev : TRIAGE_DEV_PATH, strerror(errno));
         return NULL;
     }
 
@@ -65,6 +67,16 @@ static void *worker(void *arg)
             n++;
             if (rep.deadline_met)
                 met++;
+            errs = 0;
+        } else if (++errs >= 20) {
+            /* Give up rather than spin. A failing loop with no sleep is a
+             * busy-wait at this thread's priority, which would be load of
+             * a completely different kind from the load this program is
+             * supposed to generate -- and it would be invisible, because
+             * the request counter would stay at zero. */
+            fprintf(stderr, "chat_load[%ld]: giving up after %u consecutive "
+                            "errors (last: %s)\n", id, errs, strerror(errno));
+            break;
         }
     }
 
@@ -94,8 +106,9 @@ int main(int argc, char **argv)
     int        c, i;
     time_t     started;
 
-    while ((c = getopt(argc, argv, "n:P:d:s:h")) != -1) {
+    while ((c = getopt(argc, argv, "n:P:d:s:D:h")) != -1) {
         switch (c) {
+        case 'D': dev = optarg; break;
         case 'n': n_threads = atoi(optarg); break;
         case 'P': prio = atoi(optarg); break;
         case 'd': deadline_us = (uint32_t)strtoul(optarg, NULL, 10); break;
@@ -112,7 +125,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("chat_load: %d threads at prio %d, deadline %uus, %ds\n",
+    printf("chat_load: dev=%s %d threads at prio %d, deadline %uus, %ds\n",
+           dev ? dev : TRIAGE_DEV_PATH,
            n_threads, prio, deadline_us, run_seconds);
 
     for (i = 0; i < n_threads; i++) {

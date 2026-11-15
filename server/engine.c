@@ -166,6 +166,14 @@ uint64_t engine_calib_check_us(void)
     return calib_check_us;
 }
 
+void engine_set_work_per_us(uint64_t units_per_us)
+{
+    if (units_per_us > 0) {
+        work_per_us    = units_per_us;
+        calib_check_us = 0;   /* 0 == not measured, it was handed to us */
+    }
+}
+
 /*
  * Tier cost model.
  *

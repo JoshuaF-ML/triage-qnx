@@ -175,8 +175,11 @@ quietly dropped.
 - **"It runs real models."** It does not yet. `server/engine.c` burns
   calibrated CPU. Scheduling behaviour is unaffected; accuracy claims
   would be fiction, so none are made.
-- **"It beats a standard inference server."** No baseline has been built
-  or measured. `bench/` is empty. Week 2.
+- ~~**"It beats a standard inference server."**~~ **Measured.** See
+  [`benchmark.md`](benchmark.md): 97-100% of deadlines met against 23-93%
+  for the same server without priority inheritance, and a worst case of
+  22ms against 1752ms for first-come-first-served. Still on QEMU, so the
+  comparison is a differential rather than an absolute latency.
 - **"Numbers are hardware-accurate."** All timing so far is on QEMU,
   which is noisy. Final numbers go on a Raspberry Pi if one is available,
   and will be reported as *measured*, never *guaranteed*.

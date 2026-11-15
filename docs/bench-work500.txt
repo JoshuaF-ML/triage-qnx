@@ -1,0 +1,205 @@
+Triage vs FCFS baseline
+detection: 100 requests at prio 40, 20000us deadline,
+           every 50000us
+flood:     4 chat threads at prio 10 for 16s
+host:      QNX triage 8.0.0 2026/10/30-09:10:05EDT x86pc x86_64
+work rate: 500 units/us, applied to every server below
+
+=== triage
+brake_reflex: dev=/dev/triage prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       99 (99.0%)
+  missed    1
+  degraded  100
+  errors    0
+  mean      7511us
+  worst     20073us
+  preempted 54 req, 251483us stolen
+  prio      100 checked, 0 not inherited
+--- server counters
+requests        176
+deadlines met   175 (99.4%)
+deadlines miss  1
+degraded        100
+preemptions     781
+stolen total    3934367us
+worst total     394324us
+worst queue     114us
+client prio     10..40
+by tier         small=73 medium=27 large=76 
+by task         detect=100 chat=76 
+cost model (clean cost, us)
+  detect small=3714 medium=8728 large=26000 
+  chat   small=40000 medium=120000 large=300000 
+interference (worst recent, % of clean cost)
+  prio   0-15    138%  (76 requests)
+  prio  32-47    282%  (100 requests)
+--- flood: chat_load: 76 requests, 76 met deadline, 3.6 req/s
+--- flood served 76 chat requests
+
+=== fcfs queue medium
+brake_reflex: dev=/dev/fcfs prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       36 (36.0%)
+  missed    64
+  degraded  0
+  errors    0
+  mean      177806us
+  worst     669608us
+  preempted 81 req, 815931us stolen
+  prio      100 checked, 100 not inherited
+  (expected: this server does not inherit priority)
+--- server counters
+requests        280
+deadlines met   216 (77.1%)
+deadlines miss  64
+degraded        0
+preemptions     1679
+stolen total    5436404us
+worst total     726202us
+worst queue     654302us
+client prio     10..40
+by tier         small=0 medium=280 large=0 
+by task         detect=100 chat=180 
+cost model (clean cost, us)
+  detect small=5000 medium=12000 large=26000 
+  chat   small=40000 medium=120000 large=300000 
+interference (worst recent, % of clean cost)
+  prio   0-15    100%  (180 requests)
+  prio  32-47    100%  (100 requests)
+--- flood: chat_load: 180 requests, 180 met deadline, 8.6 req/s
+--- flood served 180 chat requests
+
+=== fcfs pool medium
+brake_reflex: dev=/dev/fcfs prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       71 (71.0%)
+  missed    29
+  degraded  0
+  errors    0
+  mean      16727us
+  worst     31564us
+  preempted 74 req, 826779us stolen
+  prio      100 checked, 100 not inherited
+  (expected: this server does not inherit priority)
+--- server counters
+requests        291
+deadlines met   262 (90.0%)
+deadlines miss  29
+degraded        0
+preemptions     1595
+stolen total    4690109us
+worst total     171841us
+worst queue     15us
+client prio     10..40
+by tier         small=0 medium=291 large=0 
+by task         detect=100 chat=191 
+cost model (clean cost, us)
+  detect small=5000 medium=12000 large=26000 
+  chat   small=40000 medium=120000 large=300000 
+interference (worst recent, % of clean cost)
+  prio   0-15    100%  (191 requests)
+  prio  32-47    100%  (100 requests)
+--- flood: chat_load: 191 requests, 191 met deadline, 9.1 req/s
+--- flood served 191 chat requests
+
+=== fcfs queue matched
+brake_reflex: dev=/dev/fcfs prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       82 (82.0%)
+  missed    18
+  degraded  0
+  errors    0
+  mean      182675us
+  worst     1093856us
+  preempted 91 req, 427424us stolen
+  prio      100 checked, 100 not inherited
+  (expected: this server does not inherit priority)
+--- server counters
+requests        178
+deadlines met   160 (89.9%)
+deadlines miss  18
+degraded        0
+preemptions     906
+stolen total    3632806us
+worst total     1193458us
+worst queue     1089429us
+client prio     10..40
+by tier         small=100 medium=0 large=78 
+by task         detect=100 chat=78 
+cost model (clean cost, us)
+  detect small=5000 medium=12000 large=26000 
+  chat   small=40000 medium=120000 large=300000 
+interference (worst recent, % of clean cost)
+  prio   0-15    100%  (78 requests)
+  prio  32-47    100%  (100 requests)
+--- flood: chat_load: 78 requests, 78 met deadline, 3.7 req/s
+--- flood served 78 chat requests
+
+=== fcfs queue all-small
+brake_reflex: dev=/dev/fcfs prio=40 deadline=20000us period=50000us
+
+brake_reflex summary
+  requests  100
+  met       1 (1.0%)
+  missed    99
+  degraded  0
+  errors    0
+  mean      134868us
+  worst     193959us
+  preempted 38 req, 91413us stolen
+  prio      100 checked, 100 not inherited
+  (expected: this server does not inherit priority)
+--- server counters
+requests        650
+deadlines met   551 (84.8%)
+deadlines miss  99
+degraded        0
+preemptions     1747
+stolen total    4447046us
+worst total     240645us
+worst queue     203141us
+client prio     10..40
+by tier         small=650 medium=0 large=0 
+by task         detect=100 chat=550 
+cost model (clean cost, us)
+  detect small=5000 medium=12000 large=26000 
+  chat   small=40000 medium=120000 large=300000 
+interference (worst recent, % of clean cost)
+  prio   0-15    100%  (550 requests)
+  prio  32-47    100%  (100 requests)
+--- flood: chat_load: 550 requests, 550 met deadline, 26.2 req/s
+--- flood served 550 chat requests
+
+================================================================
+RESULTS -- detection deadline hit rate under chat flood
+================================================================
+100 requests at prio 40, 20000us deadline, 
+flooded by 4 chat threads at prio 10.
+
+server                    met     rate      worst       mean
+------                    ---     ----      -----       ----
+triage                 99/100      99%     20073us      7511us
+fcfs queue medium      36/100      36%    669608us    177806us
+fcfs pool medium       71/100      71%     31564us     16727us
+fcfs queue matched     82/100      82%   1093856us    182675us
+fcfs queue all-small    1/100       1%    193959us    134868us
+
+Read the rate column. Absolute latencies on QEMU include CPU the
+host stole from the guest, which is why this is run as a
+differential on one boot rather than quoted as a measurement.
+
+'fcfs queue medium' is what people actually deploy.
+'fcfs queue matched' runs the same tiers Triage chose, so it
+  isolates scheduling from tier selection -- the honest control.
+'fcfs queue all-small' is confounded: it cheapens the flood too.
+
+written to bench-results.txt
