@@ -5,6 +5,7 @@
 #include <sys/syspage.h>
 
 #include "engine.h"
+#include "nn.h"
 
 static uint64_t cycles_per_us = 1;
 
@@ -161,6 +162,16 @@ uint64_t engine_work_per_us(void)
     return work_per_us;
 }
 
+int engine_last_class(void)
+{
+    return nn_scan_best_class();
+}
+
+int engine_last_truth(void)
+{
+    return nn_scan_truth_class();
+}
+
 uint64_t engine_calib_check_us(void)
 {
     return calib_check_us;
@@ -233,6 +244,10 @@ void engine_init(void)
         cycles_per_us = 1;
 
     calibrate();
+
+    /* Measures how long a patch of real inference takes at each tier,
+     * which is where DETECT's tier costs and chunk sizes now come from. */
+    nn_init();
 }
 
 uint64_t engine_now_us(void)
@@ -258,20 +273,57 @@ static int valid(triage_task_t task, triage_tier_t tier)
     return task < TRIAGE_TASK__COUNT && tier < TRIAGE_TIER__COUNT;
 }
 
+/*
+ * TARGET_CHUNK_US -- how long a chunk of real inference should take.
+ *
+ * This is the resolution of the deadline logic, so it wants to be small;
+ * it is also the overhead of re-checking the clock and the cancel flag,
+ * so it does not want to be tiny. 2ms is the figure architecture.md
+ * argued for, and the sliding-window scan can hit it exactly by choosing
+ * how many patches go in a chunk.
+ */
+#define TARGET_CHUNK_US 2000u
+
+/*
+ * DETECT is real inference now, so its shape is measured rather than
+ * declared: a tier costs however long its arithmetic takes on this
+ * machine. CHAT is still a calibrated load and still uses the table.
+ *
+ * This is a better arrangement than the six hand-chosen numbers it
+ * replaces. Those numbers had to be right for the deadline story to make
+ * sense, and nothing checked them.
+ */
 unsigned engine_chunks(triage_task_t task, triage_tier_t tier)
 {
-    return valid(task, tier) ? shapes[task][tier].chunks : 0;
+    if (!valid(task, tier))
+        return 0;
+    if (task == TRIAGE_TASK_DETECT) {
+        unsigned patches = nn_patches(tier);
+        unsigned per     = nn_patches_per_chunk(tier, TARGET_CHUNK_US);
+
+        if (patches == 0 || per == 0)
+            return 0;
+        return (patches + per - 1u) / per;     /* ceil */
+    }
+    return shapes[task][tier].chunks;
 }
 
 uint64_t engine_chunk_us(triage_task_t task, triage_tier_t tier)
 {
-    return valid(task, tier) ? shapes[task][tier].chunk_us : 0;
+    if (!valid(task, tier))
+        return 0;
+    if (task == TRIAGE_TASK_DETECT)
+        return nn_patches_per_chunk(tier, TARGET_CHUNK_US)
+               * nn_us_per_patch(tier);
+    return shapes[task][tier].chunk_us;
 }
 
 uint64_t engine_nominal_us(triage_task_t task, triage_tier_t tier)
 {
     if (!valid(task, tier))
         return 0;
+    if (task == TRIAGE_TASK_DETECT)
+        return (uint64_t)nn_patches(tier) * nn_us_per_patch(tier);
     return (uint64_t)shapes[task][tier].chunks * shapes[task][tier].chunk_us;
 }
 
@@ -325,7 +377,10 @@ uint64_t engine_run_chunk(triage_task_t task, triage_tier_t tier)
         return 0;
 
     t0 = engine_now_us();
-    engine_burn_us(shapes[task][tier].chunk_us);
+    if (task == TRIAGE_TASK_DETECT)
+        nn_scan_step(nn_patches_per_chunk(tier, TARGET_CHUNK_US));
+    else
+        engine_burn_us(shapes[task][tier].chunk_us);
     elapsed = engine_now_us() - t0;
 
     if (elapsed > 0) {
@@ -337,9 +392,39 @@ uint64_t engine_run_chunk(triage_task_t task, triage_tier_t tier)
     return elapsed;
 }
 
+/* CHAT has no trained model yet, so its confidence is still a declared
+ * figure rather than a measured one. DETECT no longer uses this table:
+ * it reports nn_accuracy(), which came off the MNIST test set. */
 static const uint32_t tier_confidence[TRIAGE_TIER__COUNT] = {
     0, 720, 880, 960
 };
+
+/*
+ * Start a request.
+ *
+ * For DETECT this picks a frame and resets the sliding-window scan, which
+ * is what lets engine_run_chunk() be stateless from the caller's point of
+ * view -- the scan lives in thread-local state in nn.c, and a pool thread
+ * serves one request at a time.
+ *
+ * The frame is chosen from the payload so that the same question gets the
+ * same frame: a client asking repeatedly gets a reproducible answer, which
+ * makes an on-target accuracy test possible.
+ */
+void engine_begin_request(triage_task_t task, triage_tier_t tier,
+                          const char *payload, uint32_t payload_len)
+{
+    uint32_t h = 2166136261u;
+    uint32_t i;
+
+    if (task != TRIAGE_TASK_DETECT)
+        return;
+
+    for (i = 0; i < payload_len; i++)   /* FNV-1a, for a stable choice */
+        h = (h ^ (uint32_t)(unsigned char)payload[i]) * 16777619u;
+
+    nn_scan_begin(tier, h);
+}
 
 void engine_answer(triage_task_t task, triage_tier_t tier,
                    const char *prompt, uint32_t prompt_len,
@@ -358,11 +443,24 @@ void engine_answer(triage_task_t task, triage_tier_t tier,
     safe[prompt_len] = '\0';
 
     if (task == TRIAGE_TASK_DETECT) {
+        /*
+         * The real detection result: what the network found, where it was,
+         * how many of the frame's windows got scanned before time ran
+         * out, and the ground truth.
+         *
+         * The truth is in the reply on purpose. It is what lets a client
+         * score the server instead of believing it, and it is how the
+         * on-target accuracy figure is produced -- the same principle as
+         * putting both priorities in every reply.
+         */
         n = snprintf(out, out_sz,
-                     "pedestrian=%s conf=%u.%u%% tier=%s q=\"%s\"",
-                     tier >= TRIAGE_TIER_MEDIUM ? "yes" : "likely",
-                     tier_confidence[tier] / 10, tier_confidence[tier] % 10,
-                     engine_tier_name(tier), safe);
+                     "class=%d truth=%d conf=%u.%u%% at=%d,%d "
+                     "scanned=%u/%u tier=%s",
+                     nn_scan_best_class(), nn_scan_truth_class(),
+                     nn_scan_best_score() / 10, nn_scan_best_score() % 10,
+                     nn_scan_best_x(), nn_scan_best_y(),
+                     nn_scan_done_patches(), nn_patches(tier),
+                     engine_tier_name(tier));
     } else {
         n = snprintf(out, out_sz,
                      "[%s model] answer to \"%s\"",
@@ -370,7 +468,19 @@ void engine_answer(triage_task_t task, triage_tier_t tier,
     }
 
     *out_len = (n < 0) ? 0 : (uint32_t)((size_t)n < out_sz ? (size_t)n : out_sz - 1);
-    *confidence = (tier < TRIAGE_TIER__COUNT) ? tier_confidence[tier] : 0;
+    /*
+     * Confidence for DETECT is the tier's MEASURED accuracy on the MNIST
+     * test set -- 93.6%, 95.3%, 97.3% -- and not the three numbers that
+     * used to live in a table here. That is the difference between
+     * claiming a bigger model is worth paying for and showing it.
+     *
+     * CHAT has no model yet, so it keeps the declared figure. The README
+     * says which is which.
+     */
+    if (task == TRIAGE_TASK_DETECT)
+        *confidence = nn_accuracy(tier);
+    else
+        *confidence = (tier < TRIAGE_TIER__COUNT) ? tier_confidence[tier] : 0;
 }
 
 const char *engine_tier_name(triage_tier_t tier)

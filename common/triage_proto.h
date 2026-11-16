@@ -21,8 +21,11 @@
 
 /* 2: tier selection models interference as well as cost; the reply and
  *    stats carry the figures the decision was made on.
- * 3: adds the CPU ceiling (budget_capped) and cancellation counters. */
-#define TRIAGE_ABI_VERSION  3u
+ * 3: adds the CPU ceiling (budget_capped) and cancellation counters.
+ * 4: DETECT runs a real network, so the reply carries what it detected
+ *    and the frame's ground truth -- accuracy becomes measurable by the
+ *    client instead of being a claim in the README. */
+#define TRIAGE_ABI_VERSION  4u
 
 /* ------------------------------------------------------------------ */
 /* Priority bands                                                      */
@@ -137,6 +140,13 @@ typedef struct {
      * budget. Reported because a ceiling nobody can observe is a ceiling
      * nobody should believe in. See server/budget.c. */
     uint32_t budget_capped;
+
+    /* What the detector decided, and what was actually in the frame.
+     * Both -1 for tasks that are not DETECT. Same principle as reporting
+     * both priorities: a client can score the server rather than trust
+     * it, which is how the per-tier accuracy figures are produced. */
+    int32_t  det_class;
+    int32_t  det_truth;
 
     uint32_t confidence;     /* 0..1000, scaled; higher tier -> higher  */
     uint32_t result_len;

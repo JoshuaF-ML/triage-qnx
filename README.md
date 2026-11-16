@@ -59,7 +59,7 @@ Hackathon, submission 14 Dec 2026).
 | Chunked compute with preemption accounting | built |
 | Deadline-driven tier selection, cost + interference model | built |
 | Text stats / counters | built |
-| Real inference backend (llama.cpp + small detector) | **stand-in load for now** |
+| Real inference backend | **DETECT is real** (trained MLPs, `server/nn.c`); CHAT still a calibrated load |
 | Boots on QNX 8.0 under QEMU, smoke test green | verified 14 Nov |
 | Priority inheritance verified on target | 100/100 requests, asserted in code |
 | First-come-first-served baseline server for comparison | built, measured |
@@ -67,15 +67,54 @@ Hackathon, submission 14 Dec 2026).
 | CPU budget protection | **built** on SCHED_SPORADIC, kernel-enforced and verified; end-to-end effect not yet measurable on QEMU |
 | Benchmark numbers on hardware | QEMU done — see [benchmark.md](docs/benchmark.md); bare metal still owed |
 
-The compute engine currently burns a calibrated number of microseconds per
-chunk instead of running a real model. This is honest scaffolding, not a
-hidden shortcut: the scheduling behaviour being demonstrated is identical,
-and `server/engine.c` is the single file a real runtime plugs into. It will
-be replaced before submission.
+Detection runs a real neural network. Three MLPs trained on MNIST
+([`tools/train_detector.py`](tools/train_detector.py)) are compiled into
+the server and scanned over a frame as a sliding window, so a tier is a
+network plus a scan density:
+
+| tier | MNIST accuracy | windows | measured cost on target |
+|---|---|---|---|
+| small | 93.2% | 81 | 162 us |
+| medium | 96.3% | 324 | 2.59 ms |
+| large | 97.8% | 1225 | 30.6 ms |
+
+Those costs are measured at startup, not declared, and `confidence` in
+every reply is the tier's measured test accuracy rather than a number
+someone typed. **Chat** has no model yet and is still a calibrated load.
+
+### What the deadline trade actually costs
+
+60 frames per row, priority 40, measured on the QNX target:
+
+| deadline | deadlines met | mean latency | detection accuracy |
+|---|---|---|---|
+| 200 ms | 100% | 12.5 ms | **78.3%** |
+| 20 ms | 100% | 1.3 ms | 58.3% |
+| 5 ms | 100% | 375 us | 51.7% |
+| 1 ms | 95% | 460 us | 51.7% |
+
+Tighten the deadline 200-fold and latency falls 27-fold while accuracy
+drops from 78% to 52% — and the deadlines keep being met. Under a flood of
+four greedy chat clients at a 20 ms deadline: 60/60 met, 60.0% accurate.
+That is "a rough answer on time beats a perfect answer too late", with a
+price tag on it.
+
+The detector is real inference; it is not a pedestrian detector. A 14x14
+MLP on digits stands in for the vision model a shipping system would run.
+What is no longer standing in is the arithmetic, the cost, the chunk
+granularity, or the accuracy. [`docs/architecture.md`](docs/architecture.md)
+has the three bugs it took to get there.
 
 ## Build
 
 Needs **QNX SDP 8.0** and its toolchain on `PATH`.
+
+The trained detector is committed as `server/nn_weights.h`, so building
+needs no Python and no dataset. To retrain it:
+
+```bash
+python tools/train_detector.py --mnist <dir-with-mnist-idx-files>
+```
 
 ```bash
 source ~/qnx800/qnxsdp-env.sh
@@ -234,6 +273,7 @@ written on Linux — the mechanism it is built on does not exist there.
 | **Priority inheritance** | `ctp->info.priority` vs `pthread_getschedparam()` in `io_devctl()`, [`server/main.c`](server/main.c) | The core of the project. Both numbers are reported in every reply, so the inheritance is observable from the client, not just asserted in a README. |
 | **Channel semantics** | `dispatch_create()` in `main()`, deliberately *without* `_NTO_CHF_FIXED_PRIORITY` | The one line that makes inheritance happen. There is a comment there telling future contributors not to "fix" it. |
 | **Thread pool** | `thread_pool_create()` in `main()` | Inheritance only buys anything if an urgent message can be received while a lazy request is still computing. |
+| **Real NN inference, chunked** | `nn_scan_step()` in [`server/nn.c`](server/nn.c), driven by `engine_run_chunk()` | A chunk is a batch of sliding windows sized to ~2 ms, so inference can stop between any two windows and still answer with the best detection so far. This is what makes a deadline able to *degrade* the model rather than just preempt it. |
 | **Cycle-accurate timing** | `ClockCycles()` and `SYSPAGE_ENTRY(qtime)->cycles_per_sec` in [`server/engine.c`](server/engine.c) | Microsecond measurement without syscall overhead in the measurement path. |
 | **CPU budget enforcement** | `SCHED_SPORADIC` in [`server/budget.c`](server/budget.c) `budget_apply()` | A kernel-enforced CPU ceiling on low-priority AI. Verified enforced by [`bench/sched_probe.c`](bench/sched_probe.c): 16.5% of CPU against ~100% unenforced. |
 | **Client unblock handling** | `io_unblock()` in [`server/main.c`](server/main.c) with [`server/cancel.c`](server/cancel.c) | A killed client's request stops at the next chunk instead of burning a whole tier of CPU at the dead client's inherited priority. |
@@ -270,6 +310,7 @@ demo/       urgent client, greedy client, counters
 bench/      FCFS baseline server and benchmark harness
 dashboard/  live web UI                             (week 3)
 docs/       architecture notes and the codelab
+tools/      trains the detector and generates server/nn_weights.h
 scripts/    QEMU image build, on-target smoke test
 ```
 

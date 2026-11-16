@@ -532,3 +532,86 @@ several requests are in flight -- four client threads were killed and one
 cancellation was recorded -- which is worth investigating, but the handler
 is wired and fires. Failing to cancel is the safe direction: the request
 simply completes as it would have before.
+
+
+## There is a real network in it now (16 Nov 2026)
+
+`server/engine.c` used to burn a calibrated number of microseconds per
+chunk. The scheduling that demonstrated was real; the AI was not, and
+"Innovation & AI Creativity" is a quarter of the judging.
+
+`server/nn.c` now runs actual inference: three MLPs trained on MNIST by
+[`tools/train_detector.py`](../tools/train_detector.py), compiled into
+`server/nn_weights.h`, scanned over a 48x48 frame as a sliding window.
+
+| tier | network | MNIST accuracy | windows/frame | measured cost |
+|---|---|---|---|---|
+| small | 196-16-11 | 93.2% | 81 (stride 4) | **162 us** |
+| medium | 196-64-11 | 96.3% | 324 (stride 2) | **2.59 ms** |
+| large | 196-128-64-11 | 97.8% | 1225 (stride 1) | **30.6 ms** |
+
+Three consequences worth stating.
+
+**The tier cost table is gone.** `engine_chunks()` and
+`engine_nominal_us()` for DETECT are computed from a startup measurement of
+how long one patch takes, not from six numbers chosen by hand. Those
+numbers had to be right for the deadline story to make sense and nothing
+checked them.
+
+**`confidence` is a measurement.** It used to be `{720, 880, 960}`,
+invented. It is now the tier's accuracy on the 10k MNIST test set, which
+anyone can check against a standard benchmark.
+
+**Chunking falls out naturally.** A chunk is a batch of windows sized to
+about 2 ms, so the scan can stop between any two windows and still answer
+with the best detection so far. This is the requirement llama.cpp could not
+have met: a runtime that only returns at the end of a 300 ms generation is
+preemptible but cannot be *degraded*.
+
+### What the trade actually costs, measured
+
+60 frames per row, on target, priority 40:
+
+| deadline | deadlines met | mean latency | detection accuracy |
+|---|---|---|---|
+| 200 ms | 100% | 12.5 ms | **78.3%** |
+| 20 ms | 100% | 1.3 ms | 58.3% |
+| 5 ms | 100% | 375 us | 51.7% |
+| 1 ms | 95% | 460 us | 51.7% |
+
+Tighten the deadline 200-fold and latency falls 27-fold while accuracy
+drops from 78% to 52% -- and the deadlines keep being met. Under a flood of
+four greedy chat clients at a 20 ms deadline: 60/60 met, 60.0% accurate,
+every request degraded. That is the project's whole claim, with the cost of
+it finally on the record instead of asserted.
+
+On-frame accuracy (78% at best) is well below the classifier's 97.8%,
+because detection also has to *find* the digit. That gap is honest and
+expected, and it is why the two numbers are reported separately.
+
+### Three bugs, because the failures were instructive
+
+1. **Every frame came back `class=5`.** A classifier trained only on
+   digits has no way to say "nothing here", and a sliding window is mostly
+   empty, so background patches outvoted the one window that mattered. Now
+   there is an 11th background class trained on the same noise the frames
+   are built from, and the scan reports the best *non-background* window.
+2. **The confidence was nonsense.** To avoid linking libm I had used a
+   4-term Taylor series for `exp`, which at `x = -10` returns +291 instead
+   of 0.000045. Softmax over that is garbage, so the winning window was
+   effectively arbitrary. `expf()` it is: ten exponentials against 3312
+   multiply-accumulates is not the cost worth optimising.
+3. **Everything was confidently wrong, 0 of 24.** MNIST classifiers are
+   not shift invariant, and a stride-2 or stride-4 window almost never
+   lands exactly on the object. Fixed from both ends: training now includes
+   shifted copies, and the test frames paste digits on a 4-pixel grid --
+   the coarsest stride any tier uses -- so the accuracy figure measures the
+   network rather than window alignment.
+
+### Still a stand-in, and where
+
+CHAT has no model. It is still a calibrated load, its confidence is still a
+declared number, and the README says so. The detector is real inference but
+it is not a pedestrian detector: a 14x14 MLP on digits stands in for the
+vision model a shipping system would run. What is no longer standing in is
+the arithmetic, the cost, the chunk granularity, or the accuracy.

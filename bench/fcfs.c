@@ -216,6 +216,8 @@ static void run_fixed(const triage_request_t *req, triage_reply_t *rep,
     start_us      = engine_now_us();
     rep->queue_us = start_us - arrival_us;
 
+    engine_begin_request(task, tier, req->payload, req->payload_len);
+
     for (i = 0; i < total_chunks; i++) {
         uint64_t elapsed  = engine_run_chunk(task, tier);
         uint64_t floor_us = engine_chunk_floor_us(task, tier);

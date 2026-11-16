@@ -35,6 +35,11 @@ uint64_t engine_now_us(void);
  * engine.c explains why the reverse silently defeats the measurement. */
 void     engine_burn_us(uint64_t us);
 
+/* What the detector concluded for the request just run, and the ground
+ * truth of the frame it scanned. Both -1 when the task was not DETECT. */
+int      engine_last_class(void);
+int      engine_last_truth(void);
+
 /* Work units per microsecond of uncontended CPU, measured by engine_init.
  * Exposed for the startup banner, so a nonsense calibration is visible. */
 uint64_t engine_work_per_us(void);
@@ -63,6 +68,13 @@ uint64_t engine_calib_check_us(void);
 unsigned engine_chunks(triage_task_t task, triage_tier_t tier);
 uint64_t engine_chunk_us(triage_task_t task, triage_tier_t tier);
 uint64_t engine_nominal_us(triage_task_t task, triage_tier_t tier);
+
+/* Start a request. For DETECT this picks a frame and resets the
+ * sliding-window scan; the scan state lives per thread, so the chunk
+ * interface below stays stateless for the caller. Must be called before
+ * the first engine_run_chunk() of a request. */
+void     engine_begin_request(triage_task_t task, triage_tier_t tier,
+                              const char *payload, uint32_t payload_len);
 
 /* Run one chunk of a tier's work. Returns the wall-clock microseconds it
  * took, which is the figure the preemption accounting compares against the

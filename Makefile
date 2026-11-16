@@ -32,12 +32,13 @@ WERROR  ?= -Werror
 CFLAGS  := -V$(VARIANT) -Wall -Wextra $(WERROR) -O2 -g -std=gnu11 \
            -D_QNX_SOURCE -MMD -MP -Icommon -Iclient -Iserver
 LDFLAGS := -V$(VARIANT)
+LDLIBS  := -lm        # expf() in server/nn.c
 
 BUILD   := build/$(ARCH)
 STAGE   := stage/$(ARCH)
 
 SERVER_SRC := server/main.c server/engine.c server/tier_sched.c \
-              server/budget.c server/cancel.c
+              server/budget.c server/cancel.c server/nn.c
 SERVER_OBJ := $(SERVER_SRC:%.c=$(BUILD)/%.o)
 
 # The client library is small enough to link into each demo directly.
@@ -64,34 +65,34 @@ all: $(BINS)
 
 $(BUILD)/triage: $(SERVER_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(BUILD)/fcfs: $(BUILD)/bench/fcfs.o $(BUILD)/server/engine.o
+$(BUILD)/fcfs: $(BUILD)/bench/fcfs.o $(BUILD)/server/engine.o $(BUILD)/server/nn.o
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Standalone: it asks the kernel a question and links nothing of ours.
 $(BUILD)/sched_probe: $(BUILD)/bench/sched_probe.o
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/brake_reflex: $(BUILD)/demo/brake_reflex.o $(CLIENT_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/chat_load: $(BUILD)/demo/chat_load.o $(CLIENT_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/triage_stat: $(BUILD)/demo/triage_stat.o $(CLIENT_OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # Deliberately links no client library: control_loop never talks to Triage.
 # It is the non-AI task that must not be starved by the AI ones.
 $(BUILD)/control_loop: $(BUILD)/demo/control_loop.o
 	@mkdir -p $(dir $@)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)

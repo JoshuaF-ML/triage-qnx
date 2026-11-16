@@ -69,6 +69,12 @@ int main(int argc, char **argv)
      * the README says, and this program exits non-zero. */
     unsigned prio_checked = 0, prio_mismatch = 0;
     unsigned preempted_reqs = 0;
+    /* The AI claim, scored rather than asserted. Every reply carries what
+     * the detector decided and what was actually in the frame, so this
+     * client counts how often the answer was right -- and that number
+     * falls as the scheduler degrades the tier to hit a deadline, which
+     * is the trade the whole project is about. */
+    unsigned det_total = 0, det_correct = 0;
     uint64_t stolen_total_us = 0;
 
     while ((c = getopt(argc, argv, "P:d:p:n:m:D:bqh")) != -1) {
@@ -108,14 +114,27 @@ int main(int argc, char **argv)
 
     for (i = 0; count == 0 || i < count; i++) {
         triage_reply_t rep;
+        char           prompt[64];
 
-        if (triage_ask(fd, TRIAGE_TASK_DETECT, "front camera frame",
+        /* A different frame each time. Cameras do not send the same image
+         * twice, and varying it is what makes an on-target accuracy
+         * measurement possible: each request scans a different frame with
+         * different ground truth. */
+        snprintf(prompt, sizeof prompt, "front camera frame %ld", i);
+
+        if (triage_ask(fd, TRIAGE_TASK_DETECT, prompt,
                        deadline_us, &rep) != 0) {
             errors++;
             if (!quiet)
                 printf("  [%4ld] ERROR %s\n", i, strerror(errno));
             sleep_us(period_us);
             continue;
+        }
+
+        if (rep.det_truth >= 0) {
+            det_total++;
+            if (rep.det_class == rep.det_truth)
+                det_correct++;
         }
 
         prio_checked++;
@@ -140,6 +159,13 @@ int main(int argc, char **argv)
         if (rep.total_us > worst_us)
             worst_us = rep.total_us;
 
+        /* Print what the detector actually said. The result carries the
+         * class, the ground truth and how much of the frame was scanned,
+         * so a reader can check the answer instead of taking a latency
+         * figure as evidence that something useful happened. */
+        if (!quiet && rep.result_len > 0)
+            printf("         -> %.*s\n", (int)rep.result_len, rep.result);
+
         if (!quiet)
             printf("  [%4ld] %-4s %6lluus tier=%-6s prio=%d/%d preempt=%u%s\n",
                    i,
@@ -162,14 +188,17 @@ int main(int argc, char **argv)
            "  mean      %lluus\n"
            "  worst     %lluus\n"
            "  preempted %u req, %lluus stolen\n"
-           "  prio      %u checked, %u not inherited\n",
+           "  prio      %u checked, %u not inherited\n"
+           "  detection %u/%u correct (%.1f%%)\n",
            met + missed,
            met, (met + missed) ? 100.0 * met / (met + missed) : 0.0,
            missed, degraded, errors,
            (unsigned long long)((met + missed) ? sum_us / (met + missed) : 0),
            (unsigned long long)worst_us,
            preempted_reqs, (unsigned long long)stolen_total_us,
-           prio_checked, prio_mismatch);
+           prio_checked, prio_mismatch,
+           det_correct, det_total,
+           det_total ? 100.0 * det_correct / det_total : 0.0);
 
     if (prio_mismatch && !baseline)
         printf("  FAIL priority was not inherited on %u of %u requests\n",

@@ -114,6 +114,8 @@ static void run_request(const triage_request_t *req, triage_reply_t *rep,
     rep->queue_us = start_us - arrival_us;
     deadline_at   = req->deadline_us ? arrival_us + req->deadline_us : 0;
 
+    engine_begin_request(task, tier, req->payload, req->payload_len);
+
     for (i = 0; i < total_chunks; i++) {
         uint64_t elapsed = engine_run_chunk(task, tier);
         uint64_t floor_us;
@@ -290,6 +292,14 @@ static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
         run_request(&req, &rep, arrival_us, tier, dec.degraded, cancel_slot);
 
         budget_release();
+
+        if ((triage_task_t)req.task == TRIAGE_TASK_DETECT) {
+            rep.det_class = engine_last_class();
+            rep.det_truth = engine_last_truth();
+        } else {
+            rep.det_class = -1;
+            rep.det_truth = -1;
+        }
 
         cancelled = (cancel_slot >= 0) && cancel_requested(cancel_slot);
         cancel_unregister(cancel_slot);
