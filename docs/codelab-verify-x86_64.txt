@@ -1,0 +1,60 @@
+
+=== step 1: a resource manager exists and answers
+step1: serving /dev/clab1
+  PASS /dev/clab1 was created by resmgr_attach()
+  PASS devctl() round trip works; step 1 cannot yet prove inheritance
+
+=== step 2: priority inheritance, and the flag that turns it off
+step2: serving /dev/clab2, priority inherited
+ask: dev=/dev/clab2 my_prio=40 burn=0us n=5
+
+ask summary: 5 inherited, 0 not inherited, 0 unreported, 0 errors
+  mean 11us  worst 21us
+  OK   priority was inherited on every request
+ask: dev=/dev/clab2 my_prio=12 burn=0us n=5
+
+ask summary: 5 inherited, 0 not inherited, 0 unreported, 0 errors
+  mean 8us  worst 15us
+  OK   priority was inherited on every request
+  PASS server ran our work at OUR priority, at both 40 and 12
+step2: channel flags 0x006b accepted
+step2: serving /dev/clab2, priority FIXED (no inheritance)
+ask: dev=/dev/clab2 my_prio=40 burn=0us n=5
+
+ask summary: 0 inherited, 5 not inherited, 0 unreported, 0 errors
+  mean 6us  worst 13us
+  OK   priority was not inherited, as expected
+  PASS _NTO_CHF_FIXED_PRIORITY turned inheritance off, as it should
+
+=== step 3: a pool thread AND an unserialised handler
+  A lazy client asks for 3s of thinking at priority 10. An urgent
+  client asks for 1ms at priority 40, one second later. Three
+  servers, same source, two flags:
+
+    -t 8        eight pool threads, and the lock that
+                iofunc_func_init() installs for you
+    -t 8 -u     eight pool threads, that lock cleared
+    -t 1 -u     one thread, lock cleared
+
+  Only the middle one can serve the urgent client. The pool and
+  the missing lock are both necessary, and neither is sufficient.
+
+  Note -W below: the urgent client opens the device BEFORE the
+  server gets busy. open() is a message to the same resource
+  manager and queues on the same threads, so a client that opens
+  late pays the queueing inside open() -- outside the timed
+  region -- and reports a latency that looks fine. That mistake
+  is how this step first appeared to pass.
+step3: serving /dev/clab3, max 8 pool threads, handlers serialised by the framework
+step3: serving /dev/clab3, max 8 pool threads, handlers concurrent
+step3: serving /dev/clab3, max 1 pool threads, handlers concurrent
+
+  urgent worst case:
+    8 threads, framework lock :   2007354us
+    8 threads, lock cleared   :      1239us
+    1 thread,  lock cleared   :   2004609us
+
+  PASS the framework's own lock was serialising every request
+  PASS one thread is still one thread -- the pool is needed too
+
+=== 6 passed, 0 failed

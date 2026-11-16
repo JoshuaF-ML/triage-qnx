@@ -5,6 +5,21 @@ Harness: [`bench/run.sh`](../bench/run.sh). Baseline: [`bench/fcfs.c`](../bench/
 Raw output: [`bench-work300.txt`](bench-work300.txt),
 [`bench-work500.txt`](bench-work500.txt), [`bench-work800.txt`](bench-work800.txt).
 
+> **These numbers predate a fix and are being re-measured (16 Nov 2026).**
+> Triage's resource manager was serialising its own handlers on the lock
+> that `iofunc_func_init()` installs, so an urgent request waited for the
+> chat inference in flight — and the latencies below come from the
+> server's own clock, which starts *after* that wait and therefore could
+> not see it. On one isolated measurement the client was waiting 193 ms
+> where the server reported 4.7 ms.
+>
+> The relative result is not in doubt: the baseline's failure mode is
+> queueing behind a 300 ms request, which is hundreds of milliseconds no
+> choice of clock conceals, and its queue-mode figures already include its
+> own queue. But Triage's side was flattered and the gap will narrow.
+> `brake_reflex` now times the round trip itself. See
+> [`architecture.md`](architecture.md#the-resource-manager-was-serialising-itself-16-nov-2026).
+
 ## The question
 
 Does making AI inference a QNX resource manager — so that a caller's

@@ -65,6 +65,7 @@ Hackathon, submission 14 Dec 2026).
 | First-come-first-served baseline server for comparison | built, measured |
 | Car sim + web dashboard | planned, week 3 |
 | CPU budget protection | **built** on SCHED_SPORADIC, kernel-enforced and verified; end-to-end effect not yet measurable on QEMU |
+| Codelab: build it yourself, with programs that run | **built**, 6/6 checks green on target — [`codelab/`](codelab/) |
 | Benchmark numbers on hardware | QEMU done — see [benchmark.md](docs/benchmark.md); bare metal still owed |
 
 Detection runs a real neural network. Three MLPs trained on MNIST
@@ -276,6 +277,7 @@ written on Linux — the mechanism it is built on does not exist there.
 | **Real NN inference, chunked** | `nn_scan_step()` in [`server/nn.c`](server/nn.c), driven by `engine_run_chunk()` | A chunk is a batch of sliding windows sized to ~2 ms, so inference can stop between any two windows and still answer with the best detection so far. This is what makes a deadline able to *degrade* the model rather than just preempt it. |
 | **Cycle-accurate timing** | `ClockCycles()` and `SYSPAGE_ENTRY(qtime)->cycles_per_sec` in [`server/engine.c`](server/engine.c) | Microsecond measurement without syscall overhead in the measurement path. |
 | **CPU budget enforcement** | `SCHED_SPORADIC` in [`server/budget.c`](server/budget.c) `budget_apply()` | A kernel-enforced CPU ceiling on low-priority AI. Verified enforced by [`bench/sched_probe.c`](bench/sched_probe.c): 16.5% of CPU against ~100% unenforced. |
+| **Unserialised handlers** | `io_funcs.lock_ocb = NULL` in `main()` | The framework locks the shared device attribute around every I/O message by default, which serialises the thread pool and quietly defeats the whole design. Clearing it is what makes concurrency real; see [`docs/architecture.md`](docs/architecture.md). |
 | **Client unblock handling** | `io_unblock()` in [`server/main.c`](server/main.c) with [`server/cancel.c`](server/cancel.c) | A killed client's request stops at the next chunk instead of burning a whole tier of CPU at the dead client's inherited priority. |
 | **Fixed-priority channel** | `ChannelCreate(_NTO_CHF_FIXED_PRIORITY ...)` in [`bench/fcfs.c`](bench/fcfs.c) `main()` | The baseline, built by setting the one flag Triage omits. It is how the benchmark isolates inheritance as a single variable. |
 | **Deferred reply** | `_RESMGR_NOREPLY` in `io_devctl()` and `MsgReply()` in `worker()`, [`bench/fcfs.c`](bench/fcfs.c) | Lets the baseline implement a real FCFS queue: receive now, reply later from another thread, in arrival order. QNX would otherwise deliver the highest-priority message first. |
@@ -309,10 +311,26 @@ client/     the client library: three functions, one header
 demo/       urgent client, greedy client, counters
 bench/      FCFS baseline server and benchmark harness
 dashboard/  live web UI                             (week 3)
-docs/       architecture notes and the codelab
+codelab/    the tutorial, with three step programs that build and run
+docs/       architecture notes and the benchmark
 tools/      trains the detector and generates server/nn_weights.h
 scripts/    QEMU image build, on-target smoke test
 ```
+
+## Codelab
+
+[`codelab/`](codelab/README.md) builds this from nothing in three steps —
+a 70-line resource manager, the priority-inheritance experiment and the
+flag that turns it off, and the two things that make inheritance actually
+land — then walks the six pieces the real service adds. Its three step
+programs build standalone (`make -C codelab`) and
+[`codelab/verify.sh`](codelab/verify.sh) asserts every claim it makes, on
+your target.
+
+It also found a real bug in this project, which is written up in both
+places: the resource manager was serialising its own handlers on the lock
+`iofunc_func_init()` installs, and the server's own latency clock could
+not see it.
 
 ## Design notes
 

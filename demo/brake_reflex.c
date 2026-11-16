@@ -17,7 +17,27 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <sys/neutrino.h>
+#include <sys/syspage.h>
+
 #include "triage.h"
+
+/*
+ * Client-side round trip.
+ *
+ * This exists because the server's own total_us starts counting at the
+ * top of its devctl handler -- which is AFTER the resource manager
+ * framework has handed the message to a thread. Anything the request
+ * waits for before that point, in the kernel or in the resmgr library, is
+ * invisible to it. A server cannot measure the time it made you wait
+ * before it knew you existed, so the client has to.
+ */
+static uint64_t cps_us = 1;
+
+static uint64_t now_us(void)
+{
+    return (uint64_t)ClockCycles() / cps_us;
+}
 
 static void sleep_us(uint64_t us)
 {
@@ -76,6 +96,13 @@ int main(int argc, char **argv)
      * is the trade the whole project is about. */
     unsigned det_total = 0, det_correct = 0;
     uint64_t stolen_total_us = 0;
+    /* Measured by us, around the devctl, not reported by the server. */
+    uint64_t rtt_worst_us = 0, rtt_sum_us = 0;
+    unsigned rtt_n = 0;
+
+    cps_us = SYSPAGE_ENTRY(qtime)->cycles_per_sec / 1000000u;
+    if (cps_us == 0)
+        cps_us = 1;
 
     while ((c = getopt(argc, argv, "P:d:p:n:m:D:bqh")) != -1) {
         switch (c) {
@@ -115,6 +142,7 @@ int main(int argc, char **argv)
     for (i = 0; count == 0 || i < count; i++) {
         triage_reply_t rep;
         char           prompt[64];
+        uint64_t       t0, rtt_us;
 
         /* A different frame each time. Cameras do not send the same image
          * twice, and varying it is what makes an on-target accuracy
@@ -122,6 +150,7 @@ int main(int argc, char **argv)
          * different ground truth. */
         snprintf(prompt, sizeof prompt, "front camera frame %ld", i);
 
+        t0 = now_us();
         if (triage_ask(fd, TRIAGE_TASK_DETECT, prompt,
                        deadline_us, &rep) != 0) {
             errors++;
@@ -130,6 +159,12 @@ int main(int argc, char **argv)
             sleep_us(period_us);
             continue;
         }
+
+        rtt_us = now_us() - t0;
+        rtt_sum_us += rtt_us;
+        rtt_n++;
+        if (rtt_us > rtt_worst_us)
+            rtt_worst_us = rtt_us;
 
         if (rep.det_truth >= 0) {
             det_total++;
@@ -188,6 +223,7 @@ int main(int argc, char **argv)
            "  mean      %lluus\n"
            "  worst     %lluus\n"
            "  preempted %u req, %lluus stolen\n"
+           "  rtt       mean %lluus worst %lluus (measured by the client)\n"
            "  prio      %u checked, %u not inherited\n"
            "  detection %u/%u correct (%.1f%%)\n",
            met + missed,
@@ -196,6 +232,8 @@ int main(int argc, char **argv)
            (unsigned long long)((met + missed) ? sum_us / (met + missed) : 0),
            (unsigned long long)worst_us,
            preempted_reqs, (unsigned long long)stolen_total_us,
+           (unsigned long long)(rtt_n ? rtt_sum_us / rtt_n : 0),
+           (unsigned long long)rtt_worst_us,
            prio_checked, prio_mismatch,
            det_correct, det_total,
            det_total ? 100.0 * det_correct / det_total : 0.0);

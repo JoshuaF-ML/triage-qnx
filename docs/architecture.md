@@ -615,3 +615,94 @@ declared number, and the README says so. The detector is real inference but
 it is not a pedestrian detector: a 14x14 MLP on digits stands in for the
 vision model a shipping system would run. What is no longer standing in is
 the arithmetic, the cost, the chunk granularity, or the accuracy.
+
+## The resource manager was serialising itself (16 Nov 2026)
+
+Found while writing [the codelab](../codelab/README.md), which is the only
+reason it was found at all: the codelab's step 3 set out to *demonstrate*
+that a thread pool lets an urgent request be received while a lazy one
+computes, and the demonstration failed.
+
+### What was wrong
+
+`iofunc_func_init()` installs `iofunc_lock_ocb_default()` and
+`iofunc_unlock_ocb_default()`, and the resource manager framework calls
+them around **every** I/O message. They lock the device attribute, which
+every client shares because they all opened the same `/dev/triage`. So
+however many pool threads exist, exactly one `io_devctl()` runs at a time,
+and an urgent detection request waits for the whole of whatever chat
+inference is in flight.
+
+That is the opposite of the project's central claim. `thread_pool_create()`
+was doing nothing; the comment in `main()` saying inheritance "only buys us
+anything if a second request can be received while the first is still
+computing" described a thing that was not happening.
+
+The fix is two lines, in `main()`:
+
+```c
+io_funcs.lock_ocb   = NULL;
+io_funcs.unlock_ocb = NULL;
+```
+
+Safe *here*, for a specific reason rather than a general one: `/dev/triage`
+has no file position, no size, no read/write path and no mutable attribute
+state. Every request is a self-contained `devctl`, and the only shared
+state the handlers touch — the scheduler's cost model — does its own
+locking. A resource manager serving real file contents would need that lock
+and would have to find its concurrency elsewhere.
+
+### Why it survived a full benchmark
+
+This is the part worth keeping. The bug was not subtle — it was a factor of
+1480 in the codelab's isolated measurement — and every number this project
+had reported was blind to it.
+
+**`total_us` starts at the top of `io_devctl()`.** That is *after* the
+framework has handed the message to a thread, so the entire wait on the
+attribute lock fell outside the measurement. `queue_us` is worse than
+useless here: it is measured from `arrival_us`, which is captured inside
+the handler, so it reported 3 µs while the real queueing was 190 ms. A
+server cannot measure the time it made you wait before it knew you existed.
+
+**And `brake_reflex` believed it.** It summarised `rep.total_us` — the
+server's number — rather than timing its own `devctl`. So the client that
+exists to be sceptical about the server's priority claims was taking the
+server's latency claims at face value.
+
+`brake_reflex` now times the round trip itself and reports both. Under a
+greedy large-tier chat client, 8 requests, 20 ms deadline:
+
+| | server's `total_us` | client's round trip |
+|---|---|---|
+| before the fix | worst 4 722 µs | worst **193 520 µs** |
+| after the fix | worst 8 512 µs | worst **8 814 µs** |
+
+Before: the server reported meeting a 20 ms deadline on all eight requests
+while the client waited 193 ms. After: the two numbers agree to within 4%,
+which is the evidence that the gap was queueing and that it is gone.
+
+The smoke test's flood step now means what it says — 100/100 deadlines met
+with the client holding the clock, worst case 11.1 ms against 20 ms.
+
+### What this invalidates
+
+Every latency and deadline figure for Triage in
+[`benchmark.md`](benchmark.md) and in the README predates this and uses the
+server's clock, so they are optimistic by however much queueing they could
+not see. They are being re-measured.
+
+The *relative* result is not in doubt: the FCFS baseline's failure mode is
+queueing behind a 300 ms chat request, which is hundreds of milliseconds
+no choice of clock conceals, and its queue-mode numbers already include its
+own queue. But Triage's side of the comparison was flattered and the gap
+will narrow.
+
+### The lesson, stated plainly
+
+Three independent habits already in this project caught every other bug in
+this document — reporting both priorities, scoring the detector against
+ground truth, burning fixed work rather than fixed time. All three work the
+same way: **two numbers for one quantity, from two parties, allowed to
+disagree.** Latency had only one number, from the party with an interest in
+it, and so it was wrong for weeks.

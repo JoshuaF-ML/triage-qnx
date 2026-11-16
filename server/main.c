@@ -459,6 +459,36 @@ int main(int argc, char **argv)
     io_funcs.devctl  = io_devctl;
     io_funcs.unblock = io_unblock;
 
+    /*
+     * Stop the resource manager framework serialising our requests.
+     *
+     * iofunc_func_init() installs iofunc_lock_ocb_default() /
+     * iofunc_unlock_ocb_default(), and the framework calls them around
+     * EVERY I/O message. They take a lock on the device attribute, which
+     * all clients share because they all opened the same /dev/triage. So
+     * however many pool threads exist, exactly one io_devctl() runs at a
+     * time, and an urgent request waits for the whole of whatever chat
+     * inference is in flight.
+     *
+     * That is the opposite of this project's entire claim, and it was
+     * invisible for weeks, because the server's own total_us starts at the
+     * top of this handler -- after the wait. A server cannot measure the
+     * time it made you wait before it knew you existed. It took a
+     * client-side round-trip measurement in brake_reflex to see it: the
+     * server reported a worst case of 4.7ms against a 20ms deadline while
+     * the client was actually waiting 193.5ms.
+     *
+     * Dropping the lock is safe HERE, and the reason is specific rather
+     * than general: /dev/triage carries no file position, no size, no
+     * read/write path, and no mutable attribute state. Every request is a
+     * self-contained devctl, and the only shared state the handlers touch
+     * -- the scheduler's cost model -- does its own locking. A resource
+     * manager that served real file contents would need this lock and
+     * would have to find its concurrency somewhere else.
+     */
+    io_funcs.lock_ocb   = NULL;
+    io_funcs.unlock_ocb = NULL;
+
     iofunc_attr_init(&dev_attr, S_IFCHR | 0666, NULL, NULL);
 
     id = resmgr_attach(dpp, &resmgr_attr, path, _FTYPE_ANY, 0,

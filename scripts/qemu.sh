@@ -8,6 +8,7 @@
 #   ./scripts/qemu.sh push      # copy built binaries to /data on target
 #   ./scripts/qemu.sh smoke     # push, then run the smoke test on target
 #   ./scripts/qemu.sh bench     # push, then run the Triage-vs-FCFS bench
+#   ./scripts/qemu.sh codelab   # push, then verify the codelab's steps
 #   ./scripts/qemu.sh console   # tail the target's serial console
 #   ./scripts/qemu.sh stop
 #
@@ -164,6 +165,19 @@ push)
     echo "pushed to /data"
     ;;
 
+codelab)
+    # The codelab's three step programs build standalone, so they are
+    # pushed and verified separately from the project proper -- a reader
+    # following the tutorial has not built Triage yet.
+    CLAB="$REPO/codelab/build/$ARCH"
+    [ -d "$CLAB" ] || { echo "error: $CLAB missing -- run 'make -C codelab' first" >&2; exit 1; }
+    ssh_target "mkdir -p /data/codelab"
+    # shellcheck disable=SC2086
+    scp $SSH_OPTS -P "$SSH_PORT"         "$CLAB/step1_hello" "$CLAB/step2_prio" "$CLAB/step3_pool"         "$CLAB/ask" "$REPO/codelab/verify.sh"         "$TARGET_USER@localhost:/data/codelab/"
+    ssh_target "chmod +x /data/codelab/*"
+    ssh_target "cd /data/codelab && ./verify.sh"
+    ;;
+
 smoke)
     "$0" push
     ssh_target "cd /data && ./smoke.sh"
@@ -188,7 +202,7 @@ stop)
     ;;
 
 *)
-    echo "usage: $0 {build|run|console|ssh|push|smoke|bench|stop}" >&2
+    echo "usage: $0 {build|run|console|ssh|push|smoke|bench|codelab|stop}" >&2
     exit 1
     ;;
 esac
