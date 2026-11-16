@@ -231,36 +231,49 @@ that its channel is created **with** `_NTO_CHF_FIXED_PRIORITY`, the single
 flag Triage omits, so its threads run at the server's priority instead of
 the caller's.
 
-100 detection requests, priority 40, 20 ms deadline, under a four-thread
-chat flood, as load intensity rises:
+150 detection requests, priority 40, 20 ms deadline, under a four-thread
+chat flood, as load intensity rises. **Every latency is timed by the
+client, around its own `devctl`**, so it includes everything the server
+made it wait for:
 
 | deadline hit rate | load 300 | load 500 | load 800 |
 |---|---|---|---|
-| **Triage** | **100%** | **99%** | **97%** |
-| same pool + tier, no inheritance | 93% | 71% | 23% |
-| FCFS queue, Triage's own tiers | 73% | 82% | 88% |
-| FCFS queue, medium tier | 22% | 36% | 0% |
+| **Triage** | **100%** | **100%** | **100%** |
+| FCFS queue, Triage's own tiers | 80% | 87% | 92% |
+| FCFS queue, medium tier | 49% | 67% | 79% |
+| same pool + tier, no inheritance | 27% | 25% | 39% |
 
 And the number that matters more than the average — worst case against a
 20 ms deadline:
 
 | | load 300 | load 500 | load 800 |
 |---|---|---|---|
-| **Triage** | **17.6 ms** | **20.1 ms** | **22.0 ms** |
-| FCFS queue, Triage's own tiers | 859 ms | 1094 ms | **1752 ms** |
+| **Triage** | **16.1 ms** | **3.4 ms** | **12.1 ms** |
+| same pool + tier, no inheritance | 114 ms | 116 ms | 62 ms |
+| FCFS queue, medium tier | 398 ms | 737 ms | 931 ms |
+| FCFS queue, Triage's own tiers | 874 ms | 1362 ms | **2236 ms** |
 
-Three readings. The baseline's hit rate tracks how much spare CPU happens
-to be lying around — 93% down to 23% on identical code — while Triage's
-barely moves, because it is not relying on headroom.
-First-come-first-served has a tail 16–88× over the deadline that no tuning
-removes, since a detection request queued behind several 300 ms chat
-requests waits for all of them. And the win is not "Triage runs a smaller
-model": it still wins when the baseline is handed Triage's own tier
-choices.
+Mean latency over the same runs: **0.4–4 ms for Triage against 36–151 ms**
+for every baseline.
 
-The benchmark doc also records the three ways an earlier version of this
-comparison was wrong — including a baseline that was accidentally
-inheriting priority and therefore "beat" Triage.
+Four readings. **One flag is worth 61–75 points** — that middle row is the
+same pool, same tier, same everything, differing only in
+`_NTO_CHF_FIXED_PRIORITY`. **First-come-first-served has a tail 14–112×
+over the deadline** that no tuning removes, since a detection request
+queued behind several 300 ms chat requests waits for all of them. **The win
+is not a smaller model**: Triage still wins when the baseline is handed its
+own tier choices. And **concurrency without priority makes things worse** —
+a thread pool multiplies the work competing with an urgent request, which
+is why the no-inheritance pool has the worst hit rate of any baseline
+despite having the best tail.
+
+This is the **second** run of this benchmark. The first is superseded: the
+server was serialising its own handlers on a lock the resource manager
+framework installs, and every latency it reported came from its own clock,
+which starts after the wait. The benchmark doc records that, the two
+changes made to the *baseline* that cost Triage points, and the three ways
+an earlier version of the comparison was wrong — including a baseline that
+accidentally inherited priority and therefore "beat" Triage.
 
 ## Evidence of QNX use
 

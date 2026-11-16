@@ -20,6 +20,11 @@
  *
  * WHAT IS DIFFERENT, AND WHY EACH ONE IS FAIR
  * -------------------------------------------
+ * 0. NOT A DIFFERENCE, DELIBERATELY: this file clears lock_ocb/unlock_ocb
+ *    exactly as Triage does. See main(). Without that, pool mode would be
+ *    serialised while Triage was not, and the control that exists to
+ *    isolate priority inheritance would be measuring two things.
+ *
  * 1. NO PRIORITY INHERITANCE. The channel is created WITH
  *    _NTO_CHF_FIXED_PRIORITY, the one flag Triage deliberately omits. Its
  *    receive threads therefore run at this server's own priority instead of
@@ -732,6 +737,28 @@ int main(int argc, char **argv)
     iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &connect_funcs,
                      _RESMGR_IO_NFUNCS, &io_funcs);
     io_funcs.devctl = io_devctl;
+
+    /*
+     * Clear the framework's per-message lock, for the SAME reason Triage
+     * does -- and here it is a fairness requirement rather than an
+     * optimisation.
+     *
+     * iofunc_func_init() installs lock_ocb/unlock_ocb, which lock the
+     * shared device attribute around every I/O message, so only one
+     * io_devctl() runs at a time. Queue mode barely notices, because it
+     * defers with _RESMGR_NOREPLY and its handler returns immediately.
+     * POOL MODE runs the request to completion inside the handler, so the
+     * lock serialises it completely.
+     *
+     * Pool mode exists to hold concurrency constant, leaving priority
+     * inheritance as the only difference from Triage. If Triage ran
+     * concurrently and pool mode did not, that control would be measuring
+     * inheritance AND serialisation at once and attributing both to
+     * inheritance -- which would overstate this project's result. So the
+     * flag stays the only variable.
+     */
+    io_funcs.lock_ocb   = NULL;
+    io_funcs.unlock_ocb = NULL;
 
     iofunc_attr_init(&dev_attr, S_IFCHR | 0666, NULL, NULL);
 

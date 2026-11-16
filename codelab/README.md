@@ -720,21 +720,27 @@ It also has to do real work to be first-come-first-served. QNX delivers the
 Otherwise the baseline quietly inherits a scheduling advantage it has not
 earned, and the comparison *understates* the difference.
 
-100 detection requests, priority 40, 20 ms deadline, under a four-thread
+150 detection requests, priority 40, 20 ms deadline, under a four-thread
 chat flood:
 
 | deadline hit rate | load 300 | load 500 | load 800 |
 |---|---|---|---|
-| **Triage** | **100%** | **99%** | **97%** |
-| same pool + tier, no inheritance | 93% | 71% | 23% |
-| FCFS queue, Triage's own tiers | 73% | 82% | 88% |
-| FCFS queue, medium tier | 22% | 36% | 0% |
+| **Triage** | **100%** | **100%** | **100%** |
+| FCFS queue, Triage's own tiers | 80% | 87% | 92% |
+| FCFS queue, medium tier | 49% | 67% | 79% |
+| same pool + tier, no inheritance | 27% | 25% | 39% |
 
-The baseline's hit rate tracks how much spare CPU happens to be lying
-around — 93% down to 23% on identical code — while Triage's barely moves,
-because it is not relying on headroom. And the win is not "Triage runs a
-smaller model": it still wins when the baseline is handed Triage's own tier
-choices.
+Worst case against that 20 ms deadline, timed by the client: Triage
+3.4–16.1 ms, the FCFS queue running Triage's own tiers 874–2236 ms.
+
+Two readings beyond the obvious one. The win is not "Triage runs a smaller
+model" — it still wins when the baseline is handed Triage's own tier
+choices. And **concurrency without priority is worse than no
+concurrency**: the no-inheritance pool has the *best* tail of any baseline
+and the *worst* hit rate, because a thread pool multiplies the work
+competing with an urgent request and only priority turns that from a
+liability into an advantage. Which is step 3, arriving from the other
+direction.
 
 > **Read [`docs/benchmark.md`](../docs/benchmark.md) for the three ways
 > this comparison was wrong before it was right** — including a baseline
@@ -742,11 +748,11 @@ choices.
 > 100% to 99%, which is the `dispatch_create_channel` trap from step 2
 > doing real damage.
 >
-> **These figures predate the step 3 fix** and use the server's own
-> latency, so they are being re-measured with the client-side round trip.
-> The relative result is not in doubt — the baseline's failure mode is
-> queueing behind a 300 ms request, which no clock choice hides — but the
-> absolute Triage numbers were flattering and will move.
+> **These are the re-run figures**, taken after the step 3 fix and timed
+> by the client on both sides. The first run of this benchmark used the
+> server's own clock for Triage and is superseded. The baseline got the
+> same lock fix, which cost Triage 66 points on the controlled row and was
+> kept for exactly that reason.
 
 ---
 
@@ -790,7 +796,9 @@ If you remember four things:
   not demonstrated.** On a single-CPU QEMU target, more AI load kept giving
   the low-priority control loop *more* CPU, not less. That is written down
   as an open item rather than tuned until it looked right.
-- **The benchmark predates the step 3 fix.** See step 9.
+- **The benchmark is one run per cell**, not an average over repeats, so
+  small differences between adjacent cells mean nothing. The effects
+  claimed in step 9 are 3× to 185×.
 
 ## Where to go next
 

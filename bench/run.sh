@@ -158,11 +158,29 @@ run_case() {
     missed=$(sed -n 's/^  missed  *\([0-9]*\).*/\1/p' /tmp/br.$$)
     worst=$(sed -n 's/^  worst  *\([0-9]*\)us.*/\1/p' /tmp/br.$$)
     mean=$(sed -n 's/^  mean  *\([0-9]*\)us.*/\1/p' /tmp/br.$$)
+    # The client's own round trip, which is the only figure that includes
+    # time the server spent making the client wait before it knew the
+    # request existed. The server's worst/mean start at the top of its
+    # handler and cannot see queueing; that is how a 193ms wait was
+    # reported as 4.7ms for weeks. Both are recorded, and the gap between
+    # them is itself a result.
+    rtt_w=$(sed -n 's/^  rtt .*worst \([0-9]*\)us.*/\1/p' /tmp/br.$$)
+    rtt_m=$(sed -n 's/^  rtt  *mean \([0-9]*\)us.*/\1/p' /tmp/br.$$)
     errs=$(sed -n 's/^  errors  *\([0-9]*\).*/\1/p' /tmp/br.$$)
     rm -f /tmp/br.$$
 
     met=${met:-0}; missed=${missed:-0}; worst=${worst:-0}
     mean=${mean:-0}; errs=${errs:-0}
+    rtt_w=${rtt_w:-0}; rtt_m=${rtt_m:-0}
+
+    # A client that cannot time itself makes this whole table the server's
+    # word against nobody, which is the failure this re-run exists to fix.
+    if [ "$rtt_w" -eq 0 ]; then
+        echo "ERROR: '$label' produced no client-side round trip figure." >&2
+        echo "       brake_reflex is too old to report rtt -- rebuild and" >&2
+        echo "       push the demos before running this." >&2
+        exit 1
+    fi
     total=$((met + missed))
     if [ "$total" -gt 0 ]; then
         pct=$((met * 100 / total))
@@ -200,7 +218,7 @@ run_case() {
     fi
     echo "--- flood served $chat_done chat requests"
 
-    RESULTS="$RESULTS$label|$met|$total|$pct|$worst|$mean|$errs
+    RESULTS="$RESULTS$label|$met|$total|$pct|$worst|$mean|$errs|$rtt_w|$rtt_m
 "
 }
 
@@ -306,15 +324,23 @@ cleanup
     echo "$N requests at prio $DET_PRIO, ${DEADLINE_US}us deadline, "
     echo "flooded by $CHAT_THREADS chat threads at prio $CHAT_PRIO."
     echo
-    printf '%-20s %8s %8s %10s %10s\n' server met rate worst mean
-    printf '%-20s %8s %8s %10s %10s\n' ------ --- ---- ----- ----
-    echo "$RESULTS" | while IFS='|' read -r label met total pct worst mean errs; do
+    printf '%-20s %8s %7s %11s %11s %11s\n' \
+           server met rate rtt_worst rtt_mean srv_worst
+    printf '%-20s %8s %7s %11s %11s %11s\n' \
+           ------ --- ---- --------- -------- ---------
+    echo "$RESULTS" | while IFS='|' read -r label met total pct worst mean errs rtt_w rtt_m; do
         [ -n "$label" ] || continue
-        printf '%-20s %4s/%-3s %7s%% %9sus %9sus' \
-               "$label" "$met" "$total" "$pct" "$worst" "$mean"
+        printf '%-20s %4s/%-3s %6s%% %9sus %9sus %9sus' \
+               "$label" "$met" "$total" "$pct" "$rtt_w" "$rtt_m" "$worst"
         [ "${errs:-0}" -gt 0 ] && printf '  (%s errors)' "$errs"
         printf '\n'
     done
+    echo
+    echo "rtt_* are measured BY THE CLIENT around its own devctl, so they"
+    echo "include everything the server made it wait for. srv_worst is the"
+    echo "server's own figure, which starts at the top of its handler and"
+    echo "cannot see queueing -- a large gap between the two columns means"
+    echo "the server was serialising requests it had not yet looked at."
     echo
     echo "Read the rate column. Absolute latencies on QEMU include CPU the"
     echo "host stole from the guest, which is why this is run as a"

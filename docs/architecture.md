@@ -172,14 +172,18 @@ enforces the ceiling rather than implying an OS feature we are not using.
 Kept here deliberately, so the list shrinks visibly rather than being
 quietly dropped.
 
-- **"It runs real models."** It does not yet. `server/engine.c` burns
-  calibrated CPU. Scheduling behaviour is unaffected; accuracy claims
-  would be fiction, so none are made.
+- ~~**"It runs real models."**~~ **Half true now.** DETECT runs real
+  inference -- three MLPs in `server/nn.c`, costs measured at startup,
+  confidence reported as the tier's measured test accuracy. CHAT is still
+  calibrated CPU in `server/engine.c`, and the detector is a digit
+  classifier standing in for a perception model.
 - ~~**"It beats a standard inference server."**~~ **Measured.** See
-  [`benchmark.md`](benchmark.md): 97-100% of deadlines met against 23-93%
-  for the same server without priority inheritance, and a worst case of
-  22ms against 1752ms for first-come-first-served. Still on QEMU, so the
-  comparison is a differential rather than an absolute latency.
+  [`benchmark.md`](benchmark.md), re-run 16 Nov with the client holding
+  the clock on both sides: 100% of deadlines met at every load point
+  against 25-39% for the same server without priority inheritance, and a
+  worst case of 3.4-16.1ms against 874-2236ms for first-come-first-served.
+  Still on QEMU, so the comparison is a differential rather than an
+  absolute latency.
 - **"Numbers are hardware-accurate."** All timing so far is on QEMU,
   which is noisy. Final numbers go on a Raspberry Pi if one is available,
   and will be reported as *measured*, never *guaranteed*.
@@ -688,15 +692,25 @@ with the client holding the clock, worst case 11.1 ms against 20 ms.
 ### What this invalidates
 
 Every latency and deadline figure for Triage in
-[`benchmark.md`](benchmark.md) and in the README predates this and uses the
-server's clock, so they are optimistic by however much queueing they could
-not see. They are being re-measured.
+[`benchmark.md`](benchmark.md) and in the README predated this and used the
+server's clock, so they were optimistic by however much queueing they could
+not see. **They have been re-measured**, and the doc now carries both the
+client's and the server's figure per server so the gap is visible.
 
-The *relative* result is not in doubt: the FCFS baseline's failure mode is
-queueing behind a 300 ms chat request, which is hundreds of milliseconds
-no choice of clock conceals, and its queue-mode numbers already include its
-own queue. But Triage's side of the comparison was flattered and the gap
-will narrow.
+The re-run also required a change to the *baseline*, because `fcfs.c` has
+the same lock and its pool mode runs requests to completion inside the
+handler. Leaving it serialised while Triage was not would have made the
+controlled comparison measure inheritance *and* serialisation and credit
+both to inheritance. Fixing it cost Triage 66 points on that row — the
+baseline went from 93% to 27% — and produced the more interesting finding:
+**concurrency without priority is worse than no concurrency**, because a
+thread pool multiplies the work competing with an urgent request.
+
+Triage itself came out better, not worse: 100% at all three load points
+with the client holding the clock, where the first run reported 100/99/97%
+with the server holding it. The gap between the two clocks is now 1.3–2.6%
+on Triage's rows, which is the evidence that the queueing is gone rather
+than merely unmeasured.
 
 ### The lesson, stated plainly
 
