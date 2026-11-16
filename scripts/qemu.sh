@@ -155,11 +155,11 @@ push)
     # shellcheck disable=SC2086
     scp $SSH_OPTS -P "$SSH_PORT" \
         "$STAGE/triage" "$STAGE/fcfs" "$STAGE/brake_reflex" \
-        "$STAGE/chat_load" "$STAGE/triage_stat" \
+        "$STAGE/chat_load" "$STAGE/triage_stat" "$STAGE/control_loop" \
         "$REPO/scripts/smoke.sh" "$REPO/bench/run.sh" \
         "$TARGET_USER@localhost:/data/"
     ssh_target "chmod +x /data/triage /data/fcfs /data/brake_reflex \
-                         /data/chat_load /data/triage_stat \
+                         /data/chat_load /data/triage_stat /data/control_loop \
                          /data/smoke.sh /data/run.sh"
     echo "pushed to /data"
     ;;

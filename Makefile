@@ -36,7 +36,8 @@ LDFLAGS := -V$(VARIANT)
 BUILD   := build/$(ARCH)
 STAGE   := stage/$(ARCH)
 
-SERVER_SRC := server/main.c server/engine.c server/tier_sched.c
+SERVER_SRC := server/main.c server/engine.c server/tier_sched.c \
+              server/budget.c server/cancel.c
 SERVER_OBJ := $(SERVER_SRC:%.c=$(BUILD)/%.o)
 
 # The client library is small enough to link into each demo directly.
@@ -44,7 +45,7 @@ SERVER_OBJ := $(SERVER_SRC:%.c=$(BUILD)/%.o)
 CLIENT_SRC := client/libtriage.c
 CLIENT_OBJ := $(CLIENT_SRC:%.c=$(BUILD)/%.o)
 
-DEMOS    := brake_reflex chat_load triage_stat
+DEMOS    := brake_reflex chat_load triage_stat control_loop
 DEMO_BIN := $(addprefix $(BUILD)/,$(DEMOS))
 
 # The FCFS baseline. It shares engine.c with Triage on purpose: if the two
@@ -83,6 +84,12 @@ $(BUILD)/chat_load: $(BUILD)/demo/chat_load.o $(CLIENT_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^
 
 $(BUILD)/triage_stat: $(BUILD)/demo/triage_stat.o $(CLIENT_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^
+
+# Deliberately links no client library: control_loop never talks to Triage.
+# It is the non-AI task that must not be starved by the AI ones.
+$(BUILD)/control_loop: $(BUILD)/demo/control_loop.o
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^
 

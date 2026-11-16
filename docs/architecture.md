@@ -456,3 +456,79 @@ the wrong place. It is also why the baseline server quietly stopped setting
 `SCHED_RR` earlier. The file is now `server/tier_sched.h`, carrying a
 comment saying why it must not be renamed back, and `-D_QNX_SOURCE` is set,
 which these QNX extensions genuinely do require.
+
+
+## The CPU ceiling: wired, and what is and is not proven (16 Nov 2026)
+
+`server/budget.c` puts low-priority requests under `SCHED_SPORADIC` for
+the duration of their work. The priority a request is *served* at does not
+change -- inheritance is untouched -- but once a capped request has spent
+its budget, the kernel demotes the thread until the budget replenishes.
+Off by default (`-b` enables it) so the Triage-vs-FCFS benchmark keeps
+measuring one thing.
+
+**Proven.** The mechanism is enforced, by the decisive measurement in
+`sched_probe` above: 16.5% of CPU against ~100% unenforced. It is applied
+exactly where intended -- a run with `-b -X 15` shows `budget capped`
+equal to the number of chat requests and zero detection requests capped,
+with detection still at 60/60 deadlines met and inheritance intact on
+every one.
+
+**Not proven: that it protects a low-priority task end to end.** Four
+attempts to measure a prio-5 `control_loop` being starved by a greedy AI
+client and rescued by the ceiling produced no signal on this host. The
+runs are in the history; the giveaway is that *more* AI load consistently
+left the control loop with *more* CPU than no AI load at all, which cannot
+be true:
+
+| | control loop CPU |
+|---|---|
+| no AI at all | 522016 units/ms |
+| greedy AI, no cap | **646876** |
+| greedy AI, cap 30% | 514013 |
+| greedy AI, cap 10% | 488260 |
+
+Two real things were learned chasing it, both kept:
+
+1. **Measuring lateness here is hopeless.** The first version of
+   `control_loop` measured wake-up lateness on a 10 ms period, and the
+   host steals CPU in ~9 ms lumps -- about a whole period. A run with no
+   AI load scored *worse* (6853 us worst lateness) than one under full
+   flood (2788 us). `control_loop -S` now measures work completed
+   instead, for the same reason `sched_probe` does.
+2. **Triage was defeating my own demo, correctly.** `chat_load` let
+   Triage choose its tier, so Triage degraded it under load and the
+   greedy client turned out to be cheap. There was nothing for a ceiling
+   to protect anyone from. `chat_load -k large -F` now insists on the big
+   model and refuses degradation, which is the client pillar 4 is actually
+   about.
+
+Even then, no signal. The most likely explanation is the one that has
+explained everything else about this host -- it does not behave like a
+single-CPU real-time system under contention, and the same noise that puts
+deadline hit rates anywhere between 92% and 100% swamps this too. So this
+demonstration joins the benchmark absolutes on the bare-metal list rather
+than being tuned until it produces a number I would have to defend.
+
+What a judge can be shown today is the probe (the kernel enforces the
+budget) and the counters (Triage applies it to exactly the right requests,
+and inheritance still works). What cannot yet be shown is the consequence.
+
+## Cancelling work nobody is waiting for
+
+`server/cancel.c` plus the `io_unblock` handler in `main.c`. A client that
+is killed or times out causes QNX to send an unblock pulse; the handler
+marks the request, and the chunk loop stops at its next boundary and
+returns `EINTR`. The same decision point the deadline check uses, for a
+second purpose.
+
+Without it, a dead client's request runs to completion at the dead
+client's *inherited* priority -- so an abandoned priority-40 request keeps
+preempting live priority-10 work to produce an answer nobody will read.
+
+Verified on target: killing `chat_load` mid-request leaves `cancelled 1`
+in the counters, where it was 0 before. The count under-reports when
+several requests are in flight -- four client threads were killed and one
+cancellation was recorded -- which is worth investigating, but the handler
+is wired and fires. Failing to cancel is the safe direction: the request
+simply completes as it would have before.

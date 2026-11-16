@@ -29,6 +29,8 @@ static void show(const triage_stats_t *s)
     printf("degraded        %llu\n", (unsigned long long)s->degraded);
     printf("preemptions     %llu\n", (unsigned long long)s->preemptions);
     printf("stolen total    %lluus\n", (unsigned long long)s->stolen_us);
+    printf("cancelled       %llu\n", (unsigned long long)s->cancelled);
+    printf("budget capped   %llu\n", (unsigned long long)s->budget_capped);
     printf("worst total     %lluus\n", (unsigned long long)s->worst_total_us);
     printf("worst queue     %lluus\n", (unsigned long long)s->worst_queue_us);
     printf("client prio     %d..%d\n", s->min_prio_seen, s->max_prio_seen);

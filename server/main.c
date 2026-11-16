@@ -54,6 +54,8 @@
 #include <sys/iofunc.h>
 #include <sys/neutrino.h>
 
+#include "budget.h"
+#include "cancel.h"
 #include "engine.h"
 #include "tier_sched.h"
 #include "triage_proto.h"
@@ -99,7 +101,7 @@ static void log_request(const triage_request_t *req, const triage_reply_t *rep)
  */
 static void run_request(const triage_request_t *req, triage_reply_t *rep,
                         uint64_t arrival_us, triage_tier_t tier,
-                        uint32_t degraded)
+                        uint32_t degraded, int cancel_slot)
 {
     uint64_t      start_us, now_us, deadline_at, chunk_us;
     unsigned      total_chunks, i;
@@ -138,6 +140,16 @@ static void run_request(const triage_request_t *req, triage_reply_t *rep,
         rep->chunks++;
 
         /*
+         * Has the client given up? If it was killed or timed out, finishing
+         * this request means burning a whole tier of CPU -- at the dead
+         * client's inherited priority -- for an answer nobody will read.
+         * The chunk boundary already exists for the deadline check; this is
+         * the same decision point used for a second purpose.
+         */
+        if (cancel_slot >= 0 && cancel_requested(cancel_slot))
+            break;
+
+        /*
          * Deadline re-check. If what is left will not fit, stop here
          * rather than sail past the deadline for an answer nobody can
          * use any more. An early stop is a degradation, so say so.
@@ -174,6 +186,28 @@ static void run_request(const triage_request_t *req, triage_reply_t *rep,
 
 /* ------------------------------------------------------------------ */
 
+/*
+ * The client has stopped waiting.
+ *
+ * QNX sends an unblock pulse when a blocked client is killed, times out,
+ * or its process dies -- the channel was created with _NTO_CHF_UNBLOCK,
+ * which dispatch_create() sets, so the resource manager routes it here.
+ * This runs on a DIFFERENT pool thread from the one doing the work, which
+ * is the whole reason it can help: the worker is busy computing.
+ *
+ * All we do is mark the request. The worker notices at its next chunk
+ * boundary and stops. We deliberately do not try to kill the thread or
+ * reply from here -- the worker owns the reply and will return EINTR.
+ */
+static int io_unblock(resmgr_context_t *ctp, io_pulse_t *msg,
+                      RESMGR_OCB_T *ocb)
+{
+    if (cancel_mark(ctp->rcvid))
+        return _RESMGR_NOREPLY;   /* the worker will finish the handshake */
+
+    return iofunc_unblock_default(ctp, msg, ocb);
+}
+
 static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
 {
     uint64_t arrival_us = engine_now_us();
@@ -190,6 +224,8 @@ static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
         triage_reply_t     rep;
         triage_tier_t      tier;
         sched_decision_t   dec;
+        int                cancel_slot = -1;
+        int                cancelled   = 0;
         struct sched_param param;
         int                policy = 0;
 
@@ -235,7 +271,35 @@ static int io_devctl(resmgr_context_t *ctp, io_devctl_t *msg, RESMGR_OCB_T *ocb)
         rep.infl_pct    = dec.infl_pct;
         rep.prio_band   = dec.prio_band;
 
-        run_request(&req, &rep, arrival_us, tier, dec.degraded);
+        /*
+         * Register before computing so io_unblock, which runs on a
+         * different pool thread, can find this request and mark it if the
+         * client goes away.
+         */
+        cancel_slot = cancel_register(ctp->rcvid);
+
+        /*
+         * Put low-priority work under the kernel-enforced CPU ceiling for
+         * the duration. This does NOT change the priority the request is
+         * served at -- inheritance is untouched -- it only means the kernel
+         * demotes this thread once it has spent its budget. Must be
+         * released whatever happens, because pool threads are reused.
+         */
+        rep.budget_capped = (uint32_t)budget_apply(rep.client_prio);
+
+        run_request(&req, &rep, arrival_us, tier, dec.degraded, cancel_slot);
+
+        budget_release();
+
+        cancelled = (cancel_slot >= 0) && cancel_requested(cancel_slot);
+        cancel_unregister(cancel_slot);
+
+        if (cancelled) {
+            /* Nobody is waiting for this. Do not reply with an answer; the
+             * client has already been unblocked by the kernel. */
+            return EINTR;
+        }
+
         sched_record((triage_task_t)req.task, &rep);
 
         if (verbose)
@@ -311,10 +375,18 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
             "usage: %s [-p path] [-v] [-i] [-t threads] [-W units]\n"
+            "          [-b] [-B us] [-E us] [-L prio] [-X prio]\n"
             "  -p path     device path to register (default %s)\n"
             "  -v          log every request to stderr\n"
             "  -i          print the tier cost model and exit\n"
             "  -t threads  max pool threads (default 16)\n"
+            "  -b          enable the kernel-enforced CPU ceiling on\n"
+            "              low-priority work. Off by default so that the\n"
+            "              benchmark measures scheduling alone.\n"
+            "  -B us       ceiling budget per period (default 3000)\n"
+            "  -E us       ceiling replenish period (default 10000)\n"
+            "  -L prio     priority a capped request drops to (default 1)\n"
+            "  -X prio     cap requests at or below this priority (15)\n"
             "  -W units    work units per microsecond, overriding the\n"
             "              startup calibration. The benchmark passes the\n"
             "              same value to every server so that both sides\n"
@@ -327,6 +399,9 @@ int main(int argc, char **argv)
 {
     const char        *path        = TRIAGE_DEV_PATH;
     int                max_threads = 16;
+    int                want_budget = 0;
+    uint32_t           bud_budget_us = 3000, bud_period_us = 10000;
+    int                bud_low_prio = 1, bud_threshold = 15;
     int                c, id;
     dispatch_t        *dpp;
     resmgr_attr_t      resmgr_attr;
@@ -336,9 +411,14 @@ int main(int argc, char **argv)
     engine_init();
     sched_init();
 
-    while ((c = getopt(argc, argv, "p:vit:W:h")) != -1) {
+    while ((c = getopt(argc, argv, "p:vit:W:bB:E:L:X:h")) != -1) {
         switch (c) {
         case 'p': path = optarg; break;
+        case 'b': want_budget = 1; break;
+        case 'B': bud_budget_us = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case 'E': bud_period_us = (uint32_t)strtoul(optarg, NULL, 10); break;
+        case 'L': bud_low_prio = atoi(optarg); break;
+        case 'X': bud_threshold = atoi(optarg); break;
         case 'W': engine_set_work_per_us(strtoull(optarg, NULL, 10)); break;
         case 'v': verbose = 1; break;
         case 'i': dump_tiers(); return 0;
@@ -366,7 +446,8 @@ int main(int argc, char **argv)
 
     iofunc_func_init(_RESMGR_CONNECT_NFUNCS, &connect_funcs,
                      _RESMGR_IO_NFUNCS, &io_funcs);
-    io_funcs.devctl = io_devctl;
+    io_funcs.devctl  = io_devctl;
+    io_funcs.unblock = io_unblock;
 
     iofunc_attr_init(&dev_attr, S_IFCHR | 0666, NULL, NULL);
 
@@ -401,6 +482,11 @@ int main(int argc, char **argv)
 
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
+
+    if (want_budget)
+        budget_configure(bud_budget_us, bud_period_us,
+                         bud_low_prio, bud_threshold);
+    budget_describe(stderr);
 
     /* The calibration figure is in the banner because every timing number
      * this server reports is scaled by it. If it looks absurd, the

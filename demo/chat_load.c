@@ -25,6 +25,14 @@ static int      prio        = 10;
 static uint32_t deadline_us = 2000000;   /* 2 s: we are not in a hurry */
 static int      run_seconds = 30;
 static const char *dev;          /* NULL == TRIAGE_DEV_PATH */
+/* By default this client lets Triage choose the tier, and Triage duly
+ * degrades it under load. That is correct behaviour, and it makes this a
+ * rude client that is nonetheless easy on the machine -- so there is
+ * nothing for a CPU ceiling to protect anyone from. -k and -F make it
+ * genuinely greedy: insist on a tier and refuse to be degraded. That is
+ * the case pillar 4 exists for. */
+static triage_tier_t want_tier = TRIAGE_TIER_NONE;
+static uint32_t      ask_flags;
 static volatile int stop;
 
 static unsigned long long total_requests;
@@ -63,7 +71,8 @@ static void *worker(void *arg)
         triage_reply_t rep;
         const char *q = questions[(int)((n + (unsigned)id) % N_QUESTIONS)];
 
-        if (triage_ask(fd, TRIAGE_TASK_CHAT, q, deadline_us, &rep) == 0) {
+        if (triage_ask_tier(fd, TRIAGE_TASK_CHAT, q, deadline_us,
+                            want_tier, ask_flags, &rep) == 0) {
             n++;
             if (rep.deadline_met)
                 met++;
@@ -93,10 +102,17 @@ static void usage(const char *a0)
 {
     fprintf(stderr,
             "usage: %s [-n threads] [-P prio] [-d deadline_us] [-s seconds]\n"
+            "          [-D path] [-k tier] [-F]\n"
             "  -n threads      concurrent chat clients (default 4)\n"
             "  -P prio         priority to run at (default 10)\n"
             "  -d deadline_us  deadline per request (default 2000000 = 2s)\n"
-            "  -s seconds      how long to flood (default 30, 0 = forever)\n",
+            "  -s seconds      how long to flood (default 30, 0 = forever)\n"
+            "  -D path         device to flood (default /dev/triage)\n"
+            "  -k tier         insist on small|medium|large instead of\n"
+            "                  letting Triage choose\n"
+            "  -F              refuse to be degraded (TRIAGE_F_NO_DEGRADE).\n"
+            "                  With -k large, this is the greedy client that\n"
+            "                  the CPU ceiling exists to contain.\n",
             a0);
 }
 
@@ -106,9 +122,16 @@ int main(int argc, char **argv)
     int        c, i;
     time_t     started;
 
-    while ((c = getopt(argc, argv, "n:P:d:s:D:h")) != -1) {
+    while ((c = getopt(argc, argv, "n:P:d:s:D:k:Fh")) != -1) {
         switch (c) {
         case 'D': dev = optarg; break;
+        case 'k':
+            if (strcmp(optarg, "small") == 0)       want_tier = TRIAGE_TIER_SMALL;
+            else if (strcmp(optarg, "medium") == 0) want_tier = TRIAGE_TIER_MEDIUM;
+            else if (strcmp(optarg, "large") == 0)  want_tier = TRIAGE_TIER_LARGE;
+            else { usage(argv[0]); return 1; }
+            break;
+        case 'F': ask_flags |= TRIAGE_F_NO_DEGRADE; break;
         case 'n': n_threads = atoi(optarg); break;
         case 'P': prio = atoi(optarg); break;
         case 'd': deadline_us = (uint32_t)strtoul(optarg, NULL, 10); break;

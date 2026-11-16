@@ -19,9 +19,10 @@
 
 #define TRIAGE_DEV_PATH     "/dev/triage"
 
-/* 2: tier selection now models interference as well as cost, and the
- *    reply and stats carry the figures the decision was made on. */
-#define TRIAGE_ABI_VERSION  2u
+/* 2: tier selection models interference as well as cost; the reply and
+ *    stats carry the figures the decision was made on.
+ * 3: adds the CPU ceiling (budget_capped) and cancellation counters. */
+#define TRIAGE_ABI_VERSION  3u
 
 /* ------------------------------------------------------------------ */
 /* Priority bands                                                      */
@@ -131,6 +132,12 @@ typedef struct {
     uint32_t infl_pct;
     uint32_t prio_band;
 
+    /* 1 == this request ran under the kernel-enforced CPU ceiling, so it
+     * could be demoted below its own priority once it had spent its
+     * budget. Reported because a ceiling nobody can observe is a ceiling
+     * nobody should believe in. See server/budget.c. */
+    uint32_t budget_capped;
+
     uint32_t confidence;     /* 0..1000, scaled; higher tier -> higher  */
     uint32_t result_len;
     char     result[TRIAGE_PAYLOAD_MAX];
@@ -160,6 +167,8 @@ typedef struct {
     uint64_t worst_total_us;
     uint64_t worst_queue_us;
     uint64_t stolen_us;      /* total CPU lost to interference, all reqs */
+    uint64_t cancelled;      /* clients that gave up mid-request          */
+    uint64_t budget_capped;  /* requests run under the CPU ceiling        */
     /* Adaptive cost model: what a tier currently costs when it runs
      * CLEAN, in us. Indexed [task][tier]. Updated by an EWMA as work
      * completes, from unpreempted requests only. */

@@ -1,6 +1,7 @@
 #include <pthread.h>
 #include <string.h>
 
+#include "cancel.h"
 #include "tier_sched.h"
 #include "engine.h"
 
@@ -211,6 +212,8 @@ void sched_record(triage_task_t task, const triage_reply_t *rep)
         stats.degraded++;
     stats.preemptions += rep->preempted;
     stats.stolen_us   += rep->stolen_us;
+    if (rep->budget_capped)
+        stats.budget_capped++;
     stats.band_requests[band]++;
 
     if (tier < TRIAGE_TIER__COUNT)
@@ -295,6 +298,9 @@ void sched_get_stats(triage_stats_t *out)
     pthread_mutex_lock(&lock);
     *out = stats;
     pthread_mutex_unlock(&lock);
+    /* Cancellations are counted where they happen, in cancel.c, because
+     * a cancelled request never reaches sched_record(). */
+    out->cancelled = cancel_total();
 }
 
 void sched_reset(void)
