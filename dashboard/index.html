@@ -1,0 +1,610 @@
+<!doctype html>
+<!--
+  Triage dashboard.
+
+  Served by dashboard/triage_web.c, which runs ON THE QNX TARGET and is
+  itself a priority-40 client of /dev/triage. Every number on this page
+  came back in a triage_reply_t from a real inference request; the only
+  thing invented here is where the car is drawn on the road, and even
+  that is driven by the replies.
+
+  No build step, no framework, no CDN -- one file, because it has to be
+  servable by a 500-line HTTP server on an embedded target.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triage</title>
+<style>
+  :root {
+    --bg:#0b0e13; --panel:#141922; --panel2:#1b2230; --line:#283040;
+    --fg:#e8edf5; --dim:#8a97ab; --dimmer:#5d6878;
+    --ok:#3ddc84; --warn:#ffb020; --bad:#ff4d5e; --urgent:#4da3ff;
+    --chat:#8b7bd8;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;
+    padding:14px 18px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  header h1 { margin:0; font-size:17px; letter-spacing:.3px; }
+  header .sub { color:var(--dim); font-size:12px; }
+  header .spacer { flex:1; }
+  #conn { font-size:12px; font-family:var(--mono); color:var(--dim); }
+  #conn.bad { color:var(--bad); }
+
+  .wrap { padding:16px 18px 40px; max-width:1500px; margin:0 auto; }
+  .grid { display:grid; gap:14px; grid-template-columns:repeat(12,1fr); }
+  .card {
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:12px 14px; min-width:0;
+  }
+  .card h2 {
+    margin:0 0 10px; font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--dim); font-weight:600;
+  }
+  .span12{grid-column:span 12} .span8{grid-column:span 8}
+  .span6{grid-column:span 6}  .span4{grid-column:span 4}
+  .span3{grid-column:span 3}
+  @media (max-width:1000px){
+    .span8,.span6,.span4,.span3{grid-column:span 12}
+  }
+
+  canvas { display:block; width:100%; border-radius:8px; background:#070a0f; }
+
+  .stat { font-family:var(--mono); }
+  .stat .v { font-size:26px; font-weight:600; line-height:1.1; }
+  .stat .u { font-size:12px; color:var(--dim); }
+  .stat .k { font-size:11px; color:var(--dim); text-transform:uppercase;
+             letter-spacing:.1em; margin-bottom:4px; }
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .urgent{color:var(--urgent)}
+
+  table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+  th { text-align:left; color:var(--dim); font-weight:600; padding:3px 6px 6px 0;
+       font-size:10px; letter-spacing:.1em; text-transform:uppercase; }
+  td { padding:2px 6px 2px 0; border-top:1px solid #1d2432; white-space:nowrap; }
+
+  .controls { display:flex; gap:18px; flex-wrap:wrap; align-items:flex-end; }
+  .ctl label { display:block; font-size:10px; letter-spacing:.1em;
+               text-transform:uppercase; color:var(--dim); margin-bottom:5px; }
+  .ctl input[type=range] { width:220px; accent-color:var(--urgent); }
+  .ctl .val { font-family:var(--mono); font-size:13px; }
+  button {
+    font:inherit; font-size:13px; padding:7px 14px; border-radius:7px;
+    border:1px solid var(--line); background:var(--panel2); color:var(--fg);
+    cursor:pointer;
+  }
+  button:hover { border-color:#3a455c; }
+  button.on { background:#3a2030; border-color:var(--bad); color:#ffd9de; }
+  .note { color:var(--dimmer); font-size:11px; margin-top:9px; line-height:1.5; }
+  .pair { font-family:var(--mono); font-size:19px; }
+  .evidence { color:var(--dim); font-size:11px; }
+  .badge { font-family:var(--mono); font-size:10px; padding:1px 6px;
+           border-radius:4px; border:1px solid var(--line); color:var(--dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Triage</h1>
+  <span class="sub">AI inference on QNX 8.0, where the kernel enforces urgency</span>
+  <span class="spacer"></span>
+  <span id="conn">connecting…</span>
+</header>
+
+<div class="wrap">
+<div class="grid">
+
+  <!-- ---------------------------------------------------------- road -->
+  <div class="card span8">
+    <h2>The car &mdash; one detection request per object, at priority <span id="hprio">40</span></h2>
+    <canvas id="road" width="1000" height="230"></canvas>
+    <div class="note">
+      Each object on the road is one <code>devctl()</code> to
+      <code>/dev/triage</code>. The label above it is what the network
+      actually returned (<code>det_class</code>) against what was really in
+      the frame (<code>det_truth</code>). Green = identified correctly and
+      on time. Amber = on time but misidentified, which is what a degraded
+      tier buys you. Red = missed the deadline.
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------ controls -->
+  <div class="card span4">
+    <h2>Controls</h2>
+    <div class="controls">
+      <div class="ctl">
+        <label for="dl">Deadline</label>
+        <input id="dl" type="range" min="0" max="5" step="1" value="3">
+        <div class="val" id="dlv">20 ms</div>
+      </div>
+      <div class="ctl">
+        <label>Competing load</label>
+        <button id="flood">Start chat flood</button>
+      </div>
+      <div class="ctl">
+        <label>&nbsp;</label>
+        <button id="reset">Reset counters</button>
+      </div>
+    </div>
+    <div class="note">
+      The deadline slider changes <code>deadline_us</code> on the next
+      request. Tighten it and watch the tier fall and the detector start
+      getting things wrong &mdash; that is the trade, live. The flood
+      starts four priority-10 chat clients against the same device; the
+      priority-40 row below should not move.
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------ headline -->
+  <div class="card span3">
+    <h2>Deadlines met</h2>
+    <div class="stat"><div class="v" id="metpct">—</div>
+      <div class="u" id="metsub">of the last 0 requests</div></div>
+  </div>
+  <div class="card span3">
+    <h2>Round trip, worst</h2>
+    <div class="stat"><div class="v" id="worst">—</div>
+      <div class="u">measured by the client, not the server</div></div>
+  </div>
+  <div class="card span3">
+    <h2>Detector accuracy</h2>
+    <div class="stat"><div class="v" id="acc">—</div>
+      <div class="u" id="accsub">scored against ground truth</div></div>
+  </div>
+  <div class="card span3">
+    <h2>Priority, client / server</h2>
+    <div class="stat"><div class="v pair" id="prios">—</div>
+      <div class="u" id="priosub">QNX makes these equal. We do not.</div></div>
+  </div>
+
+  <!-- --------------------------------------------------------- plots -->
+  <div class="card span8">
+    <h2>Round-trip latency against the deadline</h2>
+    <canvas id="lat" width="1000" height="200"></canvas>
+    <div class="note">
+      One bar per request, oldest left. The dashed line is the deadline.
+      Bar colour is the model tier that ran:
+      <span class="badge" style="color:#6ee7a8">small</span>
+      <span class="badge" style="color:#7fc4ff">medium</span>
+      <span class="badge" style="color:#c9a6ff">large</span>.
+      Tier selection is why the bars stay under the line when the load
+      arrives &mdash; it gives up accuracy rather than time.
+    </div>
+  </div>
+
+  <div class="card span4">
+    <h2>Which model ran</h2>
+    <canvas id="tiers" width="500" height="200"></canvas>
+    <div class="note">
+      Share of the last 60 requests at each tier. Watch this shift down
+      when the flood starts, then back up when it stops.
+    </div>
+  </div>
+
+  <!-- ------------------------------------------------------ evidence -->
+  <div class="card span4">
+    <h2>Server counters</h2>
+    <table id="counters"></table>
+  </div>
+
+  <div class="card span4">
+    <h2>Interference by priority band</h2>
+    <table id="bands"></table>
+    <div class="note">
+      How much longer than its clean cost a request in that band is
+      currently taking. Detection is interrupted proportionally more than
+      chat, because a 5&nbsp;ms request losing 10&nbsp;ms is 300% while a
+      300&nbsp;ms request losing 84&nbsp;ms is 128%.
+    </div>
+  </div>
+
+  <div class="card span4">
+    <h2>Last request, in full</h2>
+    <table id="last"></table>
+    <div class="note">
+      Straight out of <code>triage_reply_t</code>. Nothing here is
+      computed by the browser.
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+"use strict";
+
+// ---------------------------------------------------------------- state
+const DEADLINES = [1000, 2000, 5000, 20000, 200000, 2000000];
+let  state = null;
+let  lastSeq = -1;
+let  failures = 0;
+
+const $ = (id) => document.getElementById(id);
+const fmtUs = (us) => us >= 1000000 ? (us/1000000).toFixed(2)+" s"
+                    : us >= 1000    ? (us/1000).toFixed(1)+" ms"
+                                    : us+" µs";
+const TIER_NAME  = ["none","small","medium","large"];
+const TIER_COLOR = ["#555f70","#6ee7a8","#7fc4ff","#c9a6ff"];
+
+// ------------------------------------------------------------- fetching
+async function poll() {
+  try {
+    const r = await fetch("/api/state", {cache:"no-store"});
+    if (!r.ok) throw new Error(r.status);
+    state = await r.json();
+    failures = 0;
+    $("conn").textContent = state.dev + " · " + state.seq
+                          + " requests since reset";
+    $("conn").className = "";
+    render();
+  } catch (e) {
+    if (++failures > 2) {
+      $("conn").textContent = "target not responding";
+      $("conn").className = "bad";
+    }
+  }
+}
+
+async function config(params) {
+  try { await fetch("/api/config?" + params, {cache:"no-store"}); } catch (e) {}
+  poll();
+}
+
+// ------------------------------------------------------------- controls
+// The slider is a VIEW of the server's deadline, not the source of it.
+// Without this the two drift apart -- the page can be reloaded, or opened
+// in a second browser, or the server started with -d, and then the
+// control says 20 ms while the server is on 2 s and every other number on
+// the page is explained by a setting the page is not showing.
+let dragging = false;
+$("dl").addEventListener("pointerdown", () => { dragging = true; });
+$("dl").addEventListener("input", () => {
+  dragging = true;
+  $("dlv").textContent = fmtUs(DEADLINES[+$("dl").value]);
+});
+$("dl").addEventListener("change", () => {
+  dragging = false;
+  config("deadline_us=" + DEADLINES[+$("dl").value]);
+});
+
+function syncDeadline() {
+  if (dragging || !state) return;
+  // Nearest configured step to whatever the server actually has.
+  let best = 0;
+  for (let i = 1; i < DEADLINES.length; i++)
+    if (Math.abs(DEADLINES[i] - state.deadline_us) <
+        Math.abs(DEADLINES[best] - state.deadline_us)) best = i;
+  $("dl").value = best;
+  $("dlv").textContent = fmtUs(state.deadline_us);
+}
+$("flood").addEventListener("click", () => {
+  const on = state && state.flood;
+  config("flood=" + (on ? 0 : 1));
+});
+$("reset").addEventListener("click", () => { carObjs.length = 0; config("reset=1"); });
+
+// ------------------------------------------------------------ rendering
+function render() {
+  if (!state) return;
+  const ev = state.events;
+  const recent = ev.slice(-60);
+
+  // ---- headline numbers
+  const ok = recent.filter(e => !e.err);
+  const met = ok.filter(e => e.met).length;
+  const pct = ok.length ? Math.round(100*met/ok.length) : 0;
+  const el = $("metpct");
+  el.textContent = ok.length ? pct + "%" : "—";
+  el.className = "v " + (pct >= 100 ? "ok" : pct >= 90 ? "warn" : "bad");
+  $("metsub").textContent = "of the last " + ok.length + " requests";
+
+  const worst = ok.reduce((m,e) => Math.max(m, e.rtt), 0);
+  const w = $("worst");
+  w.textContent = ok.length ? fmtUs(worst) : "—";
+  w.className = "v " + (worst <= state.deadline_us ? "ok" : "bad");
+
+  const scored = ok.filter(e => e.truth >= 0);
+  const right = scored.filter(e => e.cls === e.truth).length;
+  const apct = scored.length ? Math.round(100*right/scored.length) : 0;
+  const a = $("acc");
+  a.textContent = scored.length ? apct + "%" : "—";
+  a.className = "v " + (apct >= 70 ? "ok" : apct >= 50 ? "warn" : "bad");
+  $("accsub").textContent = right + " of " + scored.length + " frames identified";
+
+  const last = ok.length ? ok[ok.length-1] : null;
+  const p = $("prios");
+  if (last) {
+    p.textContent = last.cprio + " / " + last.sprio;
+    const same = last.cprio === last.sprio;
+    p.className = "v pair " + (same ? "urgent" : "bad");
+    $("priosub").textContent = same
+      ? "equal on every request. QNX does this, not us."
+      : "NOT INHERITED — the mechanism is not working";
+    $("hprio").textContent = last.cprio;
+  }
+
+  syncDeadline();
+  drawRoad(ev);
+  drawLatency(recent);
+  drawTiers(recent);
+  drawCounters();
+  drawBands();
+  drawLast(last);
+
+  $("flood").textContent = state.flood ? "Stop chat flood" : "Start chat flood";
+  $("flood").className = state.flood ? "on" : "";
+}
+
+// ---- counters ---------------------------------------------------------
+function row(t, k, v, cls) {
+  const tr = t.insertRow();
+  tr.insertCell().textContent = k;
+  const c = tr.insertCell();
+  c.textContent = v;
+  c.style.textAlign = "right";
+  if (cls) c.className = cls;
+}
+
+function drawCounters() {
+  const s = state.stats, t = $("counters");
+  t.innerHTML = "<tr><th>counter</th><th style='text-align:right'>value</th></tr>";
+  if (!s.have) { row(t, "stats", "unavailable"); return; }
+  row(t, "requests",        s.requests);
+  row(t, "detect / chat",   s.detect + " / " + s.chat);
+  row(t, "deadlines met",   s.met, "ok");
+  row(t, "deadlines missed",s.missed, s.missed ? "bad" : "");
+  row(t, "degraded",        s.degraded, "warn");
+  row(t, "preemptions",     s.preemptions);
+  row(t, "CPU lost to interference", fmtUs(s.stolen_us));
+  row(t, "cancelled",       s.cancelled);
+  row(t, "under CPU ceiling", s.capped);
+  row(t, "detect cost small/med/large",
+      s.est_detect.slice(1).map(fmtUs).join(" / "));
+}
+
+function drawBands() {
+  const s = state.stats, t = $("bands");
+  t.innerHTML = "<tr><th>priority</th><th style='text-align:right'>interference</th>"
+              + "<th style='text-align:right'>n</th></tr>";
+  if (!s.have || !s.bands.length) { row(t, "no traffic yet", ""); return; }
+  for (const b of s.bands) {
+    const tr = t.insertRow();
+    tr.insertCell().textContent = b.lo + "–" + b.hi;
+    const c = tr.insertCell();
+    c.textContent = b.infl + "%";
+    c.style.textAlign = "right";
+    c.className = b.infl >= 250 ? "bad" : b.infl >= 150 ? "warn" : "ok";
+    const n = tr.insertCell();
+    n.textContent = b.n;
+    n.style.textAlign = "right";
+    n.style.color = "var(--dimmer)";
+  }
+}
+
+function drawLast(e) {
+  const t = $("last");
+  t.innerHTML = "<tr><th>field</th><th style='text-align:right'>value</th></tr>";
+  if (!e) { row(t, "no replies yet", ""); return; }
+  row(t, "tier_used",   TIER_NAME[e.tier] + (e.degraded ? "  (degraded)" : ""),
+      e.degraded ? "warn" : "ok");
+  row(t, "deadline_met",e.met ? "yes" : "no", e.met ? "ok" : "bad");
+  row(t, "round trip (client)", fmtUs(e.rtt));
+  row(t, "total_us (server)",   fmtUs(e.total));
+  row(t, "compute_us",  fmtUs(e.compute));
+  row(t, "est_used_us", fmtUs(e.est));
+  row(t, "infl_pct",    e.infl + "%");
+  row(t, "preempted",   e.preempted + " chunks, " + fmtUs(e.stolen) + " lost");
+  row(t, "det_class / det_truth", e.cls + " / " + e.truth,
+      e.cls === e.truth ? "ok" : "bad");
+  row(t, "confidence",  (e.conf/10).toFixed(1) + "%");
+  row(t, "client_prio / server_prio", e.cprio + " / " + e.sprio,
+      e.cprio === e.sprio ? "urgent" : "bad");
+  row(t, "budget_capped", e.capped ? "yes" : "no");
+}
+
+// ---- latency plot -----------------------------------------------------
+function drawLatency(ev) {
+  const c = $("lat"), x = c.getContext("2d");
+  const W = c.width, H = c.height, pad = 26;
+  x.clearRect(0,0,W,H);
+  if (!ev.length) return;
+
+  const dl   = state.deadline_us;
+  const peak = Math.max(dl*1.35, ...ev.map(e => e.rtt||0));
+  const y    = (v) => H - pad - (v/peak)*(H - pad - 10);
+  const bw   = (W - pad*2) / Math.max(ev.length, 30);
+
+  // deadline line
+  x.setLineDash([5,4]); x.strokeStyle = "#ff4d5e88"; x.lineWidth = 1;
+  x.beginPath(); x.moveTo(pad, y(dl)); x.lineTo(W-pad, y(dl)); x.stroke();
+  x.setLineDash([]);
+  x.fillStyle = "#ff4d5eaa"; x.font = "11px ui-monospace, monospace";
+  x.fillText("deadline " + fmtUs(dl), pad+2, y(dl)-5);
+
+  ev.forEach((e,i) => {
+    const px = pad + i*bw;
+    if (e.err) {
+      x.fillStyle = "#ff4d5e55";
+      x.fillRect(px, pad, Math.max(bw-1.5,1.5), H-pad*2);
+      return;
+    }
+    const h = Math.max(H - pad - y(e.rtt), 1);
+    x.fillStyle = e.met ? TIER_COLOR[e.tier] : "#ff4d5e";
+    x.globalAlpha = e.met ? 0.85 : 1;
+    x.fillRect(px, H-pad-h, Math.max(bw-1.5,1.5), h);
+    x.globalAlpha = 1;
+  });
+
+  x.fillStyle = "#5d6878";
+  x.fillText("0", 4, H-pad+4);
+  x.fillText(fmtUs(Math.round(peak)), 4, 14);
+}
+
+// ---- tier mix ---------------------------------------------------------
+function drawTiers(ev) {
+  const c = $("tiers"), x = c.getContext("2d");
+  const W = c.width, H = c.height;
+  x.clearRect(0,0,W,H);
+  const ok = ev.filter(e => !e.err);
+  if (!ok.length) return;
+
+  const counts = [0,0,0,0];
+  ok.forEach(e => counts[e.tier]++);
+  const barH = 34, gap = 16, top = 16;
+
+  for (let t = 1; t <= 3; t++) {
+    const frac = counts[t]/ok.length;
+    const yy = top + (t-1)*(barH+gap);
+    x.fillStyle = "#1b2230";
+    x.fillRect(90, yy, W-110, barH);
+    x.fillStyle = TIER_COLOR[t];
+    x.fillRect(90, yy, (W-110)*frac, barH);
+    x.fillStyle = "#e8edf5";
+    x.font = "13px ui-monospace, monospace";
+    x.fillText(TIER_NAME[t], 10, yy+barH/2+5);
+    x.fillStyle = frac > 0.12 ? "#0b0e13" : "#8a97ab";
+    x.fillText(Math.round(frac*100)+"%",
+               frac > 0.12 ? 98 : 96 + (W-110)*frac, yy+barH/2+5);
+  }
+}
+
+// ---- the road ---------------------------------------------------------
+// The only simulated thing on this page: where an object is drawn. Each
+// object corresponds to one real reply, and its verdict is that reply's.
+const carObjs = [];
+const SPACING = 0.16;      // gap between objects, in road-lengths
+let roadOffset = 0;
+
+function pushNewEvents(ev) {
+  // First poll after a page load: the server has a long history and
+  // feeding all of it through the spacing rule below would queue dozens
+  // of objects far off the right-hand edge, leaving an empty road for a
+  // minute. So seed the road with the most recent few, already spread
+  // across it, and start tracking from there.
+  if (lastSeq < 0 && ev.length) {
+    const seed = ev.filter(e => !e.err).slice(-8);
+    seed.forEach((e,i) => carObjs.push({
+      x: 0.95 - (seed.length-1-i)*0.13,
+      cls: e.cls, truth: e.truth, met: !!e.met,
+      tier: e.tier, degraded: !!e.degraded
+    }));
+    lastSeq = ev[ev.length-1].seq;
+    return;
+  }
+
+  for (const e of ev) {
+    if (e.seq <= lastSeq) continue;
+    lastSeq = e.seq;
+    if (e.err) continue;
+    // Space them out: replies can arrive faster than an object can cross
+    // the road, and stacked objects are unreadable. But the queue is
+    // BOUNDED, because the first version was not -- objects entered at
+    // "behind the last one" while the last one was itself still queued,
+    // so with replies arriving faster than the spacing drained, the
+    // backlog grew forever and the road went empty while fourteen
+    // objects sat at x = 5.6 to 7.7, off the right-hand edge.
+    const prev = carObjs[carObjs.length-1];
+    const x0 = prev ? Math.min(Math.max(1.0, prev.x + SPACING),
+                               1.0 + 2*SPACING) : 1.0;
+    carObjs.push({ x: x0, cls: e.cls, truth: e.truth, met: !!e.met,
+                   tier: e.tier, degraded: !!e.degraded });
+  }
+  while (carObjs.length > 14) carObjs.shift();
+}
+
+function drawRoad(ev) {
+  pushNewEvents(ev);
+  const c = $("road"), x = c.getContext("2d");
+  const W = c.width, H = c.height;
+  const horizon = 42, roadY = H - 36;
+
+  x.clearRect(0,0,W,H);
+
+  // sky and road
+  const sky = x.createLinearGradient(0,0,0,horizon+40);
+  sky.addColorStop(0,"#0a1018"); sky.addColorStop(1,"#121a26");
+  x.fillStyle = sky; x.fillRect(0,0,W,horizon+40);
+  x.fillStyle = "#171d27"; x.fillRect(0,horizon+40,W,H-horizon-40);
+  x.strokeStyle = "#2a3444"; x.lineWidth = 2;
+  x.beginPath(); x.moveTo(0,horizon+40); x.lineTo(W,horizon+40); x.stroke();
+
+  // lane markings, scrolling
+  roadOffset = (roadOffset + 3.2) % 90;
+  x.strokeStyle = "#3a475c"; x.lineWidth = 4; x.setLineDash([46,44]);
+  x.lineDashOffset = -roadOffset;
+  x.beginPath(); x.moveTo(0, roadY+14); x.lineTo(W, roadY+14); x.stroke();
+  x.setLineDash([]);
+
+  // objects, moving toward the car
+  // Speed is derived from the REQUEST RATE, not picked to look nice, so
+  // the road stays in steady state whatever the period is: an object
+  // covers one spacing in the time between two replies.
+  const perSec  = SPACING * (1000000 / (state.period_us || 400000));
+  const perTick = perSec * 0.05;          // this runs every 50ms
+
+  for (let i = carObjs.length - 1; i >= 0; i--) {
+    const o = carObjs[i];
+    o.x -= perTick;
+    if (o.x < -0.15) { carObjs.splice(i, 1); continue; }
+    const px = 120 + o.x * (W - 180);
+    const correct = o.cls === o.truth;
+    const col = !o.met ? "#ff4d5e" : correct ? "#3ddc84" : "#ffb020";
+
+    // the object
+    x.fillStyle = col;
+    x.globalAlpha = 0.9;
+    x.beginPath(); x.arc(px, roadY-16, 9, 0, Math.PI*2); x.fill();
+    x.fillRect(px-5, roadY-7, 10, 22);
+    x.globalAlpha = 1;
+
+    // what the detector said
+    x.font = "11px ui-monospace, monospace";
+    x.fillStyle = col;
+    x.textAlign = "center";
+    x.fillText("saw " + o.cls, px, roadY-36);
+    x.fillStyle = "#5d6878";
+    x.fillText("was " + o.truth, px, roadY-50);
+    x.fillStyle = TIER_COLOR[o.tier];
+    x.fillText(TIER_NAME[o.tier], px, roadY+32);
+    x.textAlign = "left";
+  }
+
+  // the car
+  const cx = 70;
+  x.fillStyle = "#4da3ff";
+  x.fillRect(cx-28, roadY-26, 56, 34);
+  x.fillStyle = "#0b0e13";
+  x.fillRect(cx-18, roadY-20, 36, 13);
+  x.fillStyle = "#1b2230";
+  x.fillRect(cx-28, roadY+8, 10, 7);
+  x.fillRect(cx+18, roadY+8, 10, 7);
+
+  // headlight cone, dimmed when the last answer was wrong or late
+  const lastObj = carObjs[carObjs.length-1];
+  const good = lastObj && lastObj.met && lastObj.cls === lastObj.truth;
+  const g = x.createLinearGradient(cx+28, roadY-10, W, roadY-10);
+  g.addColorStop(0, good ? "#4da3ff33" : "#ff4d5e33");
+  g.addColorStop(1, "#4da3ff00");
+  x.fillStyle = g;
+  x.beginPath();
+  x.moveTo(cx+28, roadY-14); x.lineTo(W, roadY-70);
+  x.lineTo(W, roadY+30); x.lineTo(cx+28, roadY+2);
+  x.closePath(); x.fill();
+}
+
+// ------------------------------------------------------------------ run
+$("dlv").textContent = fmtUs(DEADLINES[+$("dl").value]);
+poll();
+setInterval(poll, 500);
+setInterval(() => { if (state) drawRoad(state.events); }, 50);
+</script>
+</body>
+</html>

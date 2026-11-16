@@ -63,7 +63,7 @@ Hackathon, submission 14 Dec 2026).
 | Boots on QNX 8.0 under QEMU, smoke test green | verified 14 Nov |
 | Priority inheritance verified on target | 100/100 requests, asserted in code |
 | First-come-first-served baseline server for comparison | built, measured |
-| Car sim + web dashboard | planned, week 3 |
+| Car sim + web dashboard | **built**, served by the target itself — [`dashboard/`](dashboard/) |
 | CPU budget protection | **built** on SCHED_SPORADIC, kernel-enforced and verified; end-to-end effect not yet measurable on QEMU |
 | Codelab: build it yourself, with programs that run | **built**, 6/6 checks green on target — [`codelab/`](codelab/) |
 | Benchmark numbers on hardware | QEMU done — see [benchmark.md](docs/benchmark.md); bare metal still owed |
@@ -290,6 +290,7 @@ written on Linux — the mechanism it is built on does not exist there.
 | **Real NN inference, chunked** | `nn_scan_step()` in [`server/nn.c`](server/nn.c), driven by `engine_run_chunk()` | A chunk is a batch of sliding windows sized to ~2 ms, so inference can stop between any two windows and still answer with the best detection so far. This is what makes a deadline able to *degrade* the model rather than just preempt it. |
 | **Cycle-accurate timing** | `ClockCycles()` and `SYSPAGE_ENTRY(qtime)->cycles_per_sec` in [`server/engine.c`](server/engine.c) | Microsecond measurement without syscall overhead in the measurement path. |
 | **CPU budget enforcement** | `SCHED_SPORADIC` in [`server/budget.c`](server/budget.c) `budget_apply()` | A kernel-enforced CPU ceiling on low-priority AI. Verified enforced by [`bench/sched_probe.c`](bench/sched_probe.c): 16.5% of CPU against ~100% unenforced. |
+| **The target serves its own UI** | `socket()`/`accept()` in [`dashboard/triage_web.c`](dashboard/triage_web.c), with a priority-40 client thread in the same process | The dashboard is a Triage client, not a log scraper. Everything the browser draws came back in a `triage_reply_t` over `devctl()`. |
 | **Unserialised handlers** | `io_funcs.lock_ocb = NULL` in `main()` | The framework locks the shared device attribute around every I/O message by default, which serialises the thread pool and quietly defeats the whole design. Clearing it is what makes concurrency real; see [`docs/architecture.md`](docs/architecture.md). |
 | **Client unblock handling** | `io_unblock()` in [`server/main.c`](server/main.c) with [`server/cancel.c`](server/cancel.c) | A killed client's request stops at the next chunk instead of burning a whole tier of CPU at the dead client's inherited priority. |
 | **Fixed-priority channel** | `ChannelCreate(_NTO_CHF_FIXED_PRIORITY ...)` in [`bench/fcfs.c`](bench/fcfs.c) `main()` | The baseline, built by setting the one flag Triage omits. It is how the benchmark isolates inheritance as a single variable. |
@@ -323,12 +324,48 @@ server/     the resource manager, the chunked engine, the tier scheduler
 client/     the client library: three functions, one header
 demo/       urgent client, greedy client, counters
 bench/      FCFS baseline server and benchmark harness
-dashboard/  live web UI                             (week 3)
+dashboard/  the live UI, and the HTTP server on the target that feeds it
 codelab/    the tutorial, with three step programs that build and run
 docs/       architecture notes and the benchmark
 tools/      trains the detector and generates server/nn_weights.h
 scripts/    QEMU image build, on-target smoke test
 ```
+
+## The dashboard
+
+![The Triage dashboard](docs/dashboard.jpg)
+
+```bash
+make stage && ./scripts/qemu.sh dash     # then open http://localhost:8088/
+```
+
+[`dashboard/triage_web.c`](dashboard/triage_web.c) runs **on the QNX
+target** and is two things at once: a priority-40 client that asks
+`/dev/triage` "what is in this frame?" on a period with a deadline, and a
+small HTTP server that hands the replies to a browser as JSON. One
+process, because the point is that everything on screen is a real reply
+from a real resource manager — the only simulated thing is where the car
+is drawn, and even that is driven by the replies.
+
+Every value the page shows is a field of `triage_reply_t`: the two
+priorities, which tier ran, whether it was on time, what the detector saw
+against the frame's ground truth, and what the tier decision was made on.
+The round trip is timed **in the client, around the `devctl`**, not taken
+from the server's own `total_us` — see
+[`docs/architecture.md`](docs/architecture.md) for the weeks that
+distinction cost.
+
+Two controls make it a demo rather than a readout. The deadline slider
+changes `deadline_us` live, and the trade happens in front of you:
+
+| deadline | tier chosen | detector accuracy | worst round trip | deadlines met |
+|---|---|---|---|---|
+| 2 s | 100% large | 83% | 89 ms | 100% |
+| 20 ms | 77% small | 55% | 9.6 ms | 100% |
+
+The other starts four priority-10 chat clients against the same device.
+The priority-40 row does not move — which is the whole project, visible
+in one click.
 
 ## Codelab
 

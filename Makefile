@@ -56,7 +56,13 @@ DEMO_BIN := $(addprefix $(BUILD)/,$(DEMOS))
 BENCH_SRC := bench/fcfs.c bench/sched_probe.c
 BENCH_OBJ := $(BENCH_SRC:%.c=$(BUILD)/%.o)
 
-BINS := $(BUILD)/triage $(BUILD)/fcfs $(BUILD)/sched_probe $(DEMO_BIN)
+# The dashboard: an HTTP server that is also a priority-40 client, so
+# everything the browser draws is a real reply from /dev/triage.
+WEB_SRC := dashboard/triage_web.c
+WEB_OBJ := $(WEB_SRC:%.c=$(BUILD)/%.o)
+
+BINS := $(BUILD)/triage $(BUILD)/fcfs $(BUILD)/sched_probe $(DEMO_BIN) \
+        $(BUILD)/triage_web
 
 .PHONY: all clean stage info
 .SUFFIXES:
@@ -94,6 +100,10 @@ $(BUILD)/control_loop: $(BUILD)/demo/control_loop.o
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+$(BUILD)/triage_web: $(WEB_OBJ) $(CLIENT_OBJ)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS) -lsocket
+
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -103,6 +113,8 @@ stage: all
 	@mkdir -p $(STAGE)
 	cp $(BINS) $(STAGE)/
 	cp scripts/smoke.sh bench/run.sh $(STAGE)/
+	mkdir -p $(STAGE)/dashboard
+	cp dashboard/index.html $(STAGE)/dashboard/
 	chmod +x $(STAGE)/smoke.sh $(STAGE)/run.sh
 	@echo "staged in $(STAGE):"
 	@ls -1 $(STAGE)
@@ -124,4 +136,4 @@ clean:
 # Header dependencies discovered by the compiler on the previous build.
 # The leading - is because they do not exist on a clean tree.
 -include $(SERVER_OBJ:.o=.d) $(CLIENT_OBJ:.o=.d) $(BENCH_OBJ:.o=.d) \
-         $(addprefix $(BUILD)/demo/,$(DEMOS:=.d))
+         $(WEB_OBJ:.o=.d) $(addprefix $(BUILD)/demo/,$(DEMOS:=.d))

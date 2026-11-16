@@ -9,6 +9,7 @@
 #   ./scripts/qemu.sh smoke     # push, then run the smoke test on target
 #   ./scripts/qemu.sh bench     # push, then run the Triage-vs-FCFS bench
 #   ./scripts/qemu.sh codelab   # push, then verify the codelab's steps
+#   ./scripts/qemu.sh dash      # push, then serve the dashboard
 #   ./scripts/qemu.sh console   # tail the target's serial console
 #   ./scripts/qemu.sh stop
 #
@@ -50,6 +51,11 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 # single core the kernel MUST take the CPU away from the low-priority work,
 # which is the behaviour Triage exists to demonstrate. Raise it to compare.
 CPUS="${CPUS:-1}"
+
+# The dashboard listens on 8080 inside the guest. Forwarded to this port
+# on the host, where a browser can reach it. Changing this needs the VM
+# restarted, because it is part of the QEMU command line.
+WEB_PORT="${WEB_PORT:-8088}"
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 STAGE="$REPO/stage/$ARCH"   # where `make stage` puts the binaries
@@ -118,7 +124,7 @@ run)
         -smp "$CPUS" "${accel[@]}" \
         -m "$RAM" \
         -drive file=output/disk-qemu.vmdk,if=ide,id=drv0 \
-        -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22" \
+        -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22,hostfwd=tcp::$WEB_PORT-:8080" \
         -device virtio-net-pci,netdev=net0 \
         -object rng-random,filename=/dev/urandom,id=rng0 \
         -device virtio-rng-pci,rng=rng0 \
@@ -157,11 +163,17 @@ push)
     scp $SSH_OPTS -P "$SSH_PORT" \
         "$STAGE/triage" "$STAGE/fcfs" "$STAGE/brake_reflex" \
         "$STAGE/chat_load" "$STAGE/triage_stat" "$STAGE/control_loop" \
+        "$STAGE/triage_web" \
         "$REPO/scripts/smoke.sh" "$REPO/bench/run.sh" \
         "$TARGET_USER@localhost:/data/"
+    ssh_target "mkdir -p /data/dashboard"
+    # shellcheck disable=SC2086
+    scp $SSH_OPTS -P "$SSH_PORT" \
+        "$REPO/dashboard/index.html" \
+        "$TARGET_USER@localhost:/data/dashboard/"
     ssh_target "chmod +x /data/triage /data/fcfs /data/brake_reflex \
                          /data/chat_load /data/triage_stat /data/control_loop \
-                         /data/smoke.sh /data/run.sh"
+                         /data/triage_web /data/smoke.sh /data/run.sh"
     echo "pushed to /data"
     ;;
 
@@ -176,6 +188,22 @@ codelab)
     scp $SSH_OPTS -P "$SSH_PORT"         "$CLAB/step1_hello" "$CLAB/step2_prio" "$CLAB/step3_pool"         "$CLAB/ask" "$REPO/codelab/verify.sh"         "$TARGET_USER@localhost:/data/codelab/"
     ssh_target "chmod +x /data/codelab/*"
     ssh_target "cd /data/codelab && ./verify.sh"
+    ;;
+
+dash)
+    # Stop the old pair BEFORE pushing: a running binary cannot be
+    # overwritten, and scp fails with a "dest open ... Failure" that does
+    # not say why. Also means the dashboard is always a fresh client of a
+    # fresh resource manager rather than one left over from a past run.
+    ssh_target "slay triage triage_web chat_load 2>/dev/null; sleep 1; true"
+    "$0" push
+    ssh_target "cd /data && (./triage > /tmp/triage.log 2>&1 &) && sleep 2 && \
+                (./triage_web -r /data/dashboard > /tmp/web.log 2>&1 &) && \
+                sleep 2 && cat /tmp/web.log"
+    echo
+    echo "dashboard: http://localhost:$WEB_PORT/"
+    echo "(if that does not answer, the VM predates the port forward --"
+    echo " run '$0 stop' then '$0 run')"
     ;;
 
 smoke)
@@ -202,7 +230,7 @@ stop)
     ;;
 
 *)
-    echo "usage: $0 {build|run|console|ssh|push|smoke|bench|codelab|stop}" >&2
+    echo "usage: $0 {build|run|console|ssh|push|smoke|bench|codelab|dash|stop}" >&2
     exit 1
     ;;
 esac
